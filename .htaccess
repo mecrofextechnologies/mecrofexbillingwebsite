@@ -1,0 +1,29 @@
+RewriteEngine On
+RewriteBase /
+
+# ── 1. Skip real files & directories ──────────────────────────
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+# ── 2. Remove trailing slashes (redirect) ─────────────────────
+RewriteCond %{REQUEST_URI} ^/ticket/[0-9]+/$
+RewriteRule ^ticket/([0-9]+)/$ /ticket/$1 [R=301,L]
+
+# ── 3. Static clean URLs ───────────────────────────────────────
+RewriteRule ^terms-of-service$           terms-of-service.php        [L,QSA]
+RewriteRule ^about$           about.php        [L,QSA]
+RewriteRule ^events$          events.php       [L,QSA]
+RewriteRule ^creators$        creators.php     [L,QSA]
+RewriteRule ^register$        register.php     [L,QSA]
+RewriteRule ^contact$         contact.php      [L,QSA]
+RewriteRule ^forgot-password$ forgot-password.php [L,QSA]
+RewriteRule ^reset-password$  reset-password.php  [L,QSA]
+RewriteRule ^login$           login.php        [L,QSA]
+RewriteRule ^index$           index.php        [L,QSA]
+
+# ── 4. Ticket: /ticket/15 → ticket.php?id=15 ──────────────────
+RewriteRule ^ticket/([0-9]+)$ ticket.php?id=$1 [L,QSA]
+
+# ── 5. Creator profiles (must be last) ────────────────────────
+RewriteRule ^([a-zA-Z0-9_-]+)$ creator-profile.php?username=$1 [L,QSA]

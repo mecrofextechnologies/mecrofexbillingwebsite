@@ -1,0 +1,60 @@
+RewriteEngine On
+
+# Rules
+RewriteRule ^about$ about.php [L]
+RewriteRule ^services$ services.php [L]
+RewriteRule ^blog$ blog.php [L]
+RewriteRule ^register$ register.php [L]
+RewriteRule ^login$ login.php [L]
+RewriteRule ^events$ events.php [L]
+RewriteRule ^vacancies$ vacancies.php [L]
+RewriteRule ^todo-list$ todo-list.php [L]
+RewriteRule ^todo-list$ todo-list.php [L]
+RewriteRule ^todo-list$ todo-list.php [L]
+RewriteRule ^todo-list$ todo-list.php [L]
+RewriteRule ^todo-list$ todo-list.php [L]
+RewriteRule ^todo-list$ todo-list.php [L]
+
+
+
+
+RewriteEngine On
+RewriteBase /keychele/
+
+# Prevent rewriting real files/folders (images, css, js)
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+
+# Rewrite /keychele/username → creator-profile.php?username=username
+RewriteRule ^([a-zA-Z0-9_-]+)$ creator-profile.php?username=$1 [QSA,L]
+
+
+
+
+
+
+RewriteEngine On
+RewriteBase /
+
+# ------------------------------------------------------------------
+# 1. Protect real files and folders (images, css, js, uploads, etc.)
+# ------------------------------------------------------------------
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+
+# ------------------------------------------------------------------
+# 2. Clean URLs:  /username  →  creator-profile.php?username=username
+# ------------------------------------------------------------------
+RewriteRule ^([a-zA-Z0-9_-]+)/?$ creator-profile.php?username=$1 [QSA,L]
+
+# ------------------------------------------------------------------
+# 3. Optional: Force HTTPS + www or non-www (recommended)
+# ------------------------------------------------------------------
+# Uncomment the block below when you're ready for HTTPS
+
+# RewriteCond %{HTTPS} off
+# RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+
+# Force non-www (or change to www if you prefer)
+# RewriteCond %{HTTP_HOST} ^www\.(.+)$ [NC]
+# RewriteRule ^ https://%1%{REQUEST_URI} [L,R=301]

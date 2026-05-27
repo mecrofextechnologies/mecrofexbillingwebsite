@@ -1,0 +1,7 @@
+*.zip
+*.mp4
+*.log
+vendor/
+node_modules/
+uploads/
+.env

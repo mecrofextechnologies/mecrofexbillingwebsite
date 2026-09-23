@@ -1,4 +1,5 @@
 <?php
+date_default_timezone_set('Africa/Nairobi'); // match MySQL server clock — see timeAgoWdr()
 include '../msanii/includes/connect.php';
 require '../vendor/autoload.php';
 use PHPMailer\PHPMailer\PHPMailer;
@@ -10,6 +11,23 @@ if (!isset($_SESSION['admin_id'])) {
     header("Location: login.php");
     exit;
 }
+
+// Self-healing: withdrawal_requests.campaign_id (fundraiser withdrawals) —
+// see msanii/withdraw_fundraiser.php for why this exists.
+try {
+    $col = $pdo->query("SHOW COLUMNS FROM withdrawal_requests LIKE 'campaign_id'")->fetchAll();
+    if (empty($col)) {
+        $pdo->exec("ALTER TABLE withdrawal_requests ADD COLUMN campaign_id INT UNSIGNED NULL DEFAULT NULL AFTER creator_id, ADD INDEX idx_campaign (campaign_id)");
+    }
+} catch (Throwable $e) {}
+
+// Automatic (Daraja B2C) withdrawals — see msanii/includes/withdrawal_payout.php.
+// They are never approved here; an admin can only reconcile one M-Pesa
+// hasn't confirmed (after checking the M-Pesa org portal).
+require_once '../msanii/includes/withdrawal_payout.php';
+try { kc_wd_ensure_schema($pdo); } catch (Throwable $e) { error_log('Withdrawal schema upgrade failed: ' . $e->getMessage()); }
+if (empty($_SESSION['kc_admin_csrf'])) $_SESSION['kc_admin_csrf'] = bin2hex(random_bytes(32));
+$wdCsrf = $_SESSION['kc_admin_csrf'];
 
 // ── Params ────────────────────────────────────────────────────
 $allowed_per_page = [10, 20, 50, 100];
@@ -151,14 +169,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['request_id'])) {
         try {
             $pdo->beginTransaction();
 
+            // FOR UPDATE: two admins completing the same request at once must
+            // not both debit the balance.
             $stmt = $pdo->prepare("
-                SELECT creator_id, amount, charge, total_amount, mpesa_number, status, notes
-                FROM withdrawal_requests WHERE id = ?
+                SELECT creator_id, campaign_id, amount, charge, total_amount, mpesa_number, status, notes, payout_method
+                FROM withdrawal_requests WHERE id = ? FOR UPDATE
             ");
             $stmt->execute([$request_id]);
             $req = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($req) { $req = kc_decrypt_row($req, ['mpesa_number', 'notes']); }
 
             if (!$req) throw new Exception("Withdrawal request not found.");
+            if (($req['payout_method'] ?? 'manual') === 'b2c')
+                throw new Exception("This is an automatic M-Pesa withdrawal and can't be approved manually. Use Reconcile if M-Pesa hasn't confirmed it.");
             if ($req['status'] === 'completed')
                 throw new Exception("This withdrawal has already been completed and is locked.");
 
@@ -172,16 +195,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['request_id'])) {
             if ($new_status === 'completed') {
                 if (empty($transaction_code))
                     throw new Exception("Transaction code is required when marking as Completed.");
-                $stmt = $pdo->prepare("
-                    UPDATE my_balance SET amount = amount - ? WHERE creator_id = ?
-                ");
-                $stmt->execute([$req['total_amount'], $req['creator_id']]);
+
+                // Fundraiser withdrawals (campaign_id set) debit that campaign's own
+                // wallet_donations row instead of the pooled ticket-sales my_balance.
+                if (!empty($req['campaign_id'])) {
+                    $stmt = $pdo->prepare("
+                        UPDATE wallet_donations SET amount = amount - ? WHERE campaign_id = ? AND creator_id = ?
+                    ");
+                    $stmt->execute([$req['total_amount'], $req['campaign_id'], $req['creator_id']]);
+                } else {
+                    $stmt = $pdo->prepare("
+                        UPDATE my_balance SET amount = amount - ? WHERE creator_id = ?
+                    ");
+                    $stmt->execute([$req['total_amount'], $req['creator_id']]);
+                }
             }
 
             // Fetch creator details (including phone)
             $stmt = $pdo->prepare("SELECT full_name, email, phone FROM creators WHERE id = ?");
             $stmt->execute([$req['creator_id']]);
             $creator = $stmt->fetch(PDO::FETCH_ASSOC);
+            if ($creator) { $creator = kc_decrypt_row($creator); }
 
             // ── SMS Notification ─────────────────────────────────────
             $smsSent = false; $smsReason = '';
@@ -268,6 +302,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['request_id'])) {
     }
 }
 
+// ── Reconcile an automatic withdrawal M-Pesa hasn't confirmed ─
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['reconcile_id'])) {
+    $rid     = (int)$_POST['reconcile_id'];
+    $outcome = $_POST['outcome'] ?? '';
+    $receipt = strtoupper(trim($_POST['receipt'] ?? ''));
+    $note    = trim($_POST['note'] ?? '');
+    try {
+        if (!hash_equals($wdCsrf, (string)($_POST['csrf'] ?? '')))                     throw new Exception('Session expired — reload and try again.');
+        if (!in_array((int)($_SESSION['user_role'] ?? 0), [1, 2], true))               throw new Exception('You are not allowed to reconcile payouts.');
+        $st = $pdo->prepare("SELECT status FROM withdrawal_requests WHERE id = ? AND payout_method = 'b2c'");
+        $st->execute([$rid]);
+        $cur = $st->fetchColumn();
+        if (!in_array($cur, ['pending', 'processing'], true))                          throw new Exception('Only an unconfirmed automatic withdrawal can be reconciled.');
+        $who = 'admin #' . (int)$_SESSION['admin_id'];
+        if ($outcome === 'successful') {
+            if ($cur !== 'processing')                                                 throw new Exception('This payout was never sent to M-Pesa, so it cannot be marked successful.');
+            if (!preg_match('/^[A-Z0-9]{8,12}$/', $receipt))                           throw new Exception('Enter the M-Pesa receipt from the org portal (8–12 letters/digits).');
+            if (!kc_wd_mark_success($pdo, $rid, $receipt, json_encode(['reconciled_by' => $who])))
+                throw new Exception('Could not mark as successful (already settled, or receipt already used).');
+            kc_wd_send_success_sms($pdo, $rid);
+            $successMsg = "Withdrawal #{$rid} reconciled as <strong>Successful</strong> ({$receipt}).";
+        } elseif ($outcome === 'failed') {
+            if ($note === '')                                                          throw new Exception('Give a reason (e.g. "Not found in M-Pesa statement").');
+            kc_wd_mark_failed($pdo, $rid, 'Reconciled as failed by ' . $who . ': ' . $note, null, null);
+            $successMsg = "Withdrawal #{$rid} reconciled as <strong>Failed</strong> — funds returned to the creator's balance.";
+        } else {
+            throw new Exception('Choose an outcome.');
+        }
+        kc_payment_log('withdrawals', "Reconciled #$rid as $outcome by $who");
+    } catch (Exception $e) {
+        $errorMsg = 'Error: ' . htmlspecialchars($e->getMessage());
+    }
+}
+
 // ── KPI aggregates ────────────────────────────────────────────
 try {
     $kpi = $pdo->query("
@@ -275,9 +343,9 @@ try {
             COUNT(*)                                                               AS total,
             SUM(status = 'pending')                                                AS pending,
             SUM(status = 'processing')                                             AS processing,
-            SUM(status = 'completed')                                              AS completed,
-            SUM(status = 'rejected')                                               AS rejected,
-            SUM(CASE WHEN status = 'completed' THEN total_amount ELSE 0 END)       AS paid_out,
+            SUM(status IN ('completed','successful'))                              AS completed,
+            SUM(status IN ('rejected','failed'))                                   AS rejected,
+            SUM(CASE WHEN status IN ('completed','successful') THEN total_amount ELSE 0 END) AS paid_out,
             SUM(CASE WHEN status = 'pending'   THEN total_amount ELSE 0 END)       AS pending_val
         FROM withdrawal_requests
     ")->fetch(PDO::FETCH_ASSOC);
@@ -285,42 +353,80 @@ try {
     $kpi = ['total'=>0,'pending'=>0,'processing'=>0,'completed'=>0,'rejected'=>0,'paid_out'=>0,'pending_val'=>0];
 }
 
-// ── Filtered count ────────────────────────────────────────────
+// ── Filtered count + fetch page ────────────────────────────────
+// c.full_name/c.email/wr.mpesa_number/wr.notes are all encrypted at rest,
+// so a SQL LIKE against them can't match anymore — decrypt candidates and
+// filter in PHP instead (same approach as admin011/all_creators.php).
+// wr.transaction_code stays plaintext and is matched the same way for
+// consistency, rather than splitting the predicate across two layers.
 try {
-    $where_parts = []; $bind = [];
+    $status_bind = [];
+    $status_sql  = '';
     if ($status_filter !== '') {
-        $where_parts[] = "wr.status = :status";
-        $bind[':status'] = $status_filter;
+        $status_sql = 'WHERE wr.status = :status';
+        $status_bind[':status'] = $status_filter;
     }
-    if ($search_q !== '') {
-        $where_parts[] = "(c.full_name LIKE :q OR c.email LIKE :q OR wr.mpesa_number LIKE :q OR wr.transaction_code LIKE :q OR wr.notes LIKE :q)";
-        $bind[':q'] = '%' . $search_q . '%';
-    }
-    $where_sql = $where_parts ? 'WHERE ' . implode(' AND ', $where_parts) : '';
 
-    $cnt = $pdo->prepare("SELECT COUNT(*) FROM withdrawal_requests wr LEFT JOIN creators c ON wr.creator_id = c.id $where_sql");
-    $cnt->execute($bind);
-    $filtered_total = (int)$cnt->fetchColumn();
-    $total_pages    = max(1, (int)ceil($filtered_total / $per_page));
-    $current_page   = min($current_page, $total_pages);
-    $offset         = ($current_page - 1) * $per_page;
-
-    $stmt = $pdo->prepare("
-        SELECT wr.id, wr.creator_id, c.full_name AS creator_name, c.email AS creator_email,
+    $baseSelect = "
+        SELECT wr.id, wr.creator_id, wr.campaign_id, fc.title AS campaign_title,
+               c.full_name AS creator_name, c.email AS creator_email,
                c.phone AS creator_phone,
                wr.mpesa_number, wr.amount, wr.charge, wr.total_amount,
-               wr.transaction_code, wr.status, wr.requested_at, wr.processed_at, wr.notes
+               wr.transaction_code, wr.status, wr.requested_at, wr.processed_at, wr.notes,
+               wr.payout_method, wr.reference, wr.failure_reason, wr.sms_status
         FROM withdrawal_requests wr
         LEFT JOIN creators c ON wr.creator_id = c.id
-        $where_sql
+        LEFT JOIN fundraiser_campaigns fc ON fc.id = wr.campaign_id
+        $status_sql
         ORDER BY wr.requested_at DESC
-        LIMIT :lim OFFSET :off
-    ");
-    foreach ($bind as $k => $v) $stmt->bindValue($k, $v);
-    $stmt->bindValue(':lim', $per_page,  PDO::PARAM_INT);
-    $stmt->bindValue(':off', $offset,    PDO::PARAM_INT);
-    $stmt->execute();
-    $requests = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    ";
+
+    if ($search_q !== '') {
+        $stmt = $pdo->prepare($baseSelect);
+        $stmt->execute($status_bind);
+        $all = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $all = array_map(function($r) {
+            $r['creator_name']  = kc_decrypt($r['creator_name']);
+            $r['creator_email'] = kc_decrypt($r['creator_email']);
+            $r['creator_phone'] = kc_decrypt($r['creator_phone']);
+            $r = kc_decrypt_row($r, ['mpesa_number', 'notes']);
+            return $r;
+        }, $all);
+
+        $matches = array_values(array_filter($all, function($r) use ($search_q) {
+            foreach ([$r['creator_name'], $r['creator_email'], $r['mpesa_number'], $r['transaction_code'], $r['notes']] as $h) {
+                if ($h !== null && stripos($h, $search_q) !== false) return true;
+            }
+            return false;
+        }));
+
+        $filtered_total = count($matches);
+        $total_pages    = max(1, (int)ceil($filtered_total / $per_page));
+        $current_page   = min($current_page, $total_pages);
+        $offset         = ($current_page - 1) * $per_page;
+        $requests       = array_slice($matches, $offset, $per_page);
+    } else {
+        $cnt = $pdo->prepare("SELECT COUNT(*) FROM withdrawal_requests wr $status_sql");
+        $cnt->execute($status_bind);
+        $filtered_total = (int)$cnt->fetchColumn();
+        $total_pages    = max(1, (int)ceil($filtered_total / $per_page));
+        $current_page   = min($current_page, $total_pages);
+        $offset         = ($current_page - 1) * $per_page;
+
+        $stmt = $pdo->prepare("$baseSelect LIMIT :lim OFFSET :off");
+        foreach ($status_bind as $k => $v) $stmt->bindValue($k, $v);
+        $stmt->bindValue(':lim', $per_page, PDO::PARAM_INT);
+        $stmt->bindValue(':off', $offset,   PDO::PARAM_INT);
+        $stmt->execute();
+        $requests = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $requests = array_map(function($r) {
+            $r['creator_name']  = kc_decrypt($r['creator_name']);
+            $r['creator_email'] = kc_decrypt($r['creator_email']);
+            $r['creator_phone'] = kc_decrypt($r['creator_phone']);
+            $r = kc_decrypt_row($r, ['mpesa_number', 'notes']);
+            return $r;
+        }, $requests);
+    }
 
 } catch (PDOException $e) {
     $requests = []; $filtered_total = 0; $total_pages = 1;
@@ -765,6 +871,8 @@ td { padding:11px 14px; font-size:.82rem; color:var(--text); vertical-align:midd
             <option value="processing" <?= $status_filter==='processing' ?'selected':'' ?>>Processing</option>
             <option value="completed"  <?= $status_filter==='completed'  ?'selected':'' ?>>Completed</option>
             <option value="rejected"   <?= $status_filter==='rejected'   ?'selected':'' ?>>Rejected</option>
+            <option value="successful" <?= $status_filter==='successful' ?'selected':'' ?>>Successful (auto)</option>
+            <option value="failed"     <?= $status_filter==='failed'     ?'selected':'' ?>>Failed (auto)</option>
           </select>
           <select name="per_page" class="select-sm" id="perPageSel">
             <?php foreach ([10,20,50,100] as $n): ?>
@@ -815,26 +923,27 @@ td { padding:11px 14px; font-size:.82rem; color:var(--text); vertical-align:midd
           <?php if (!empty($requests)): ?>
             <?php foreach ($requests as $i => $row):
               $status    = strtolower($row['status'] ?? 'pending');
+              $isAuto    = ($row['payout_method'] ?? 'manual') === 'b2c';
               $isLocked  = $status === 'completed';
               $mpesaName = extractMpesaName($row['notes'] ?? '');
               $rc = match($status) {
                   'pending'    => 'row-pending',
-                  'rejected'   => 'row-rejected',
+                  'rejected', 'failed' => 'row-rejected',
                   'processing' => 'row-processing',
                   default      => ''
               };
               $badge_class = match($status) {
                   'pending'    => 'badge-pending',
                   'processing' => 'badge-processing',
-                  'completed'  => 'badge-completed',
-                  'rejected'   => 'badge-rejected',
+                  'completed', 'successful' => 'badge-completed',
+                  'rejected', 'failed'      => 'badge-rejected',
                   default      => 'badge-locked'
               };
               $badge_icon = match($status) {
                   'pending'    => 'fa-hourglass-half',
                   'processing' => 'fa-spinner',
-                  'completed'  => 'fa-check',
-                  'rejected'   => 'fa-times',
+                  'completed', 'successful' => 'fa-check',
+                  'rejected', 'failed'      => 'fa-times',
                   default      => 'fa-circle'
               };
               $parts = explode(' ', trim($row['creator_name'] ?? ''));
@@ -853,6 +962,12 @@ td { padding:11px 14px; font-size:.82rem; color:var(--text); vertical-align:midd
                     <?php if (!empty($row['creator_phone'])): ?>
                       <div class="creator-phone">
                         <i class="fas fa-phone" style="font-size:.58rem;margin-right:3px"></i><?= htmlspecialchars($row['creator_phone']) ?>
+                      </div>
+                    <?php endif; ?>
+                    <?php if (!empty($row['campaign_id'])): ?>
+                      <div style="margin-top:4px;display:inline-flex;align-items:center;gap:4px;font-size:.65rem;font-weight:700;color:#7c2fb0;background:#ede9fe;border:1px solid #ddd6fe;border-radius:999px;padding:2px 8px;">
+                        <i class="fas fa-hand-holding-heart" style="font-size:.6rem;"></i>
+                        <?= htmlspecialchars(mb_strimwidth($row['campaign_title'] ?? ('Fundraiser #' . $row['campaign_id']), 0, 28, '…')) ?>
                       </div>
                     <?php endif; ?>
                   </div>
@@ -883,6 +998,17 @@ td { padding:11px 14px; font-size:.82rem; color:var(--text); vertical-align:midd
                   <i class="fas <?= $badge_icon ?>" style="font-size:.55rem"></i>
                   <?= ucfirst($status) ?>
                 </span>
+                <?php if ($isAuto): ?>
+                  <div style="font-size:.62rem;color:var(--text-3);margin-top:3px">
+                    <i class="fas fa-bolt"></i> Auto · <span style="font-family:var(--mono)"><?= htmlspecialchars($row['reference'] ?? '') ?></span>
+                  </div>
+                  <?php if (!empty($row['failure_reason'])): ?>
+                    <div style="font-size:.65rem;color:#991b1b;max-width:200px;white-space:normal"><?= htmlspecialchars($row['failure_reason']) ?></div>
+                  <?php endif; ?>
+                  <?php if (($row['sms_status'] ?? '') === 'failed'): ?>
+                    <div style="font-size:.62rem;color:#92400e"><i class="fas fa-comment-slash"></i> SMS failed</div>
+                  <?php endif; ?>
+                <?php endif; ?>
               </td>
 
               <td style="white-space:nowrap">
@@ -904,7 +1030,28 @@ td { padding:11px 14px; font-size:.82rem; color:var(--text); vertical-align:midd
 
               <!-- Action -->
               <td style="text-align:right">
-                <?php if ($isLocked): ?>
+                <?php if ($isAuto && in_array($status, ['pending', 'processing'], true)): ?>
+                  <form method="POST" class="action-form"
+                        onsubmit="return confirm('Only reconcile after checking the M-Pesa org portal. Marking Failed returns the funds to the creator; marking Successful records the receipt. Continue?');">
+                    <?php if ($dash_page): ?>
+                      <input type="hidden" name="page" value="<?= htmlspecialchars($dash_page) ?>">
+                    <?php endif; ?>
+                    <input type="hidden" name="csrf" value="<?= htmlspecialchars($wdCsrf) ?>">
+                    <input type="hidden" name="reconcile_id" value="<?= (int)$row['id'] ?>">
+                    <select name="outcome" class="form-select-ui" required>
+                      <option value="" selected disabled>Reconcile…</option>
+                      <?php if ($status === 'processing'): ?><option value="successful">Paid (enter receipt)</option><?php endif; ?>
+                      <option value="failed">Not paid (refund)</option>
+                    </select>
+                    <input type="text" name="receipt" class="tx-input" placeholder="M-Pesa receipt" maxlength="12">
+                    <input type="text" name="note" class="tx-input" placeholder="Reason if not paid" maxlength="150">
+                    <button type="submit" class="btn-update"><i class="fas fa-scale-balanced"></i> Reconcile</button>
+                  </form>
+                <?php elseif ($isAuto): ?>
+                  <span class="locked-label">
+                    <i class="fas fa-bolt" style="font-size:.65rem;color:var(--text-3)"></i> Automatic
+                  </span>
+                <?php elseif ($isLocked): ?>
                   <span class="locked-label">
                     <i class="fas fa-lock" style="font-size:.65rem;color:var(--text-3)"></i> Locked
                   </span>

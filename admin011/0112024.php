@@ -1,4 +1,5 @@
 <?php
+date_default_timezone_set('Africa/Nairobi'); // match MySQL server clock — see timeAgo()
 include '../msanii/includes/connect.php';
 if (session_status() === PHP_SESSION_NONE) session_start();
 
@@ -32,7 +33,7 @@ try {
 
     $wdr = $pdo->query("
         SELECT
-            COALESCE(SUM(CASE WHEN status='completed' THEN total_amount ELSE 0 END), 0) AS paid_out,
+            COALESCE(SUM(CASE WHEN status IN ('completed','successful') THEN total_amount ELSE 0 END), 0) AS paid_out,
             SUM(status = 'pending')                                                       AS pending_cnt
         FROM withdrawal_requests
     ")->fetch(PDO::FETCH_ASSOC);
@@ -172,6 +173,7 @@ try {
         ORDER BY tp.created_at DESC
         LIMIT 8
     ")->fetchAll(PDO::FETCH_ASSOC);
+    $recent_purchases = array_map(fn($row) => kc_decrypt_row($row, ['buyer_name','buyer_email','buyer_phone']), $recent_purchases);
 
     // ── Recent creators (last 6) ─────────────────────────────
     $recent_creators = $pdo->query("
@@ -180,6 +182,7 @@ try {
         ORDER BY date_created DESC
         LIMIT 6
     ")->fetchAll(PDO::FETCH_ASSOC);
+    $recent_creators = array_map(fn($row) => kc_decrypt_row($row), $recent_creators);
 
     // ── Creator login activity feed (last 10 successful logins) ─
     $login_activity = $pdo->query("
@@ -191,6 +194,7 @@ try {
         ORDER BY cl.created_at DESC
         LIMIT 10
     ")->fetchAll(PDO::FETCH_ASSOC);
+    $login_activity = array_map(function($r) { $r['full_name'] = kc_decrypt($r['full_name']); return $r; }, $login_activity);
 
     // ── Login logs: all events (last 30) ─────────────────────
     $login_logs = $pdo->query("
@@ -203,6 +207,7 @@ try {
         ORDER BY cl.created_at DESC
         LIMIT 30
     ")->fetchAll(PDO::FETCH_ASSOC);
+    $login_logs = array_map(function($r) { $r['full_name'] = kc_decrypt($r['full_name']); return $r; }, $login_logs);
 
     // ── Log summary counts (for mini-stats) ──────────────────
     $log_kpi = $pdo->query("

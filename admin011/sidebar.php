@@ -99,12 +99,12 @@ $admin_id = $_SESSION['admin_id']; // Replace with actual session variable if di
             </a>
         </li>
         <li class="nav-item">
-            <a href="./index.php?page=moderators_list" class="nav-link nav-staff_list tree-item">
-                <i class="fas fa-users nav-icon"></i>
-                <p>About us</p>
+            <a href="./index.php?page=about_us" class="nav-link nav-about_us tree-item">
+                <i class="fas fa-circle-info nav-icon"></i>
+                <p>About Us</p>
             </a>
         </li>
-        
+
     </ul>
 </li>
 
@@ -163,6 +163,39 @@ $admin_id = $_SESSION['admin_id']; // Replace with actual session variable if di
                             <a href="./index.php?page=all_creators" class="nav-link nav-sub_link1_1 tree-item">
                                 <i class="fas fa-list-alt nav-icon"></i>
                                 <p>All creators</p>
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a href="./index.php?page=all_creators&tab=inactivity" class="nav-link nav-sub_link1_2 tree-item">
+                                <i class="fas fa-user-clock nav-icon"></i>
+                                <p>Inactivity management</p>
+                            </a>
+                        </li>
+                    </ul>
+                </li>
+
+                <li class="nav-item">
+                    <a href="#" class="nav-link nav-link2">
+                        <i class="nav-icon fas fa-user-group"></i>
+                        <p>Audience <i class="right fas fa-angle-left"></i></p>
+                    </a>
+                    <ul class="nav nav-treeview">
+                        <li class="nav-item">
+                            <a href="./index.php?page=ticket_buyers" class="nav-link tree-item">
+                                <i class="fas fa-ticket nav-icon"></i>
+                                <p>Ticket buyers</p>
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a href="./index.php?page=donors" class="nav-link tree-item">
+                                <i class="fas fa-hand-holding-heart nav-icon"></i>
+                                <p>Donors</p>
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a href="./index.php?page=visitor_accounts" class="nav-link tree-item">
+                                <i class="fas fa-address-book nav-icon"></i>
+                                <p>Visitor accounts</p>
                             </a>
                         </li>
                     </ul>
@@ -228,10 +261,16 @@ $admin_id = $_SESSION['admin_id']; // Replace with actual session variable if di
                     <p>Tickets <i class="right fas fa-angle-left"></i></p>
                   </a>
                   <ul class="nav nav-treeview">
+                    <li class="nav-item">
+                          <a href="index.php?page=creator_tickets" class="nav-link nav-sub_link5_1 tree-item">
+                              <i class="fas fa-list-ul nav-icon"></i>
+                              <p>All Tickets</p>
+                           </a>
+                      </li>
                       <li class="nav-item">
                           <a href="index.php?page=all_tickets" class="nav-link nav-sub_link5_1 tree-item">
                               <i class="fas fa-list-ul nav-icon"></i>
-                              <p>All Tickets</p>
+                              <p>All Tickets Purchases</p>
                            </a>
                       </li>
                       
@@ -248,16 +287,49 @@ $admin_id = $_SESSION['admin_id']; // Replace with actual session variable if di
                               <p>Surveys Analytics</p>
                            </a>
                       </li>
-                      
-                      
+
+                      <li class="nav-item">
+                          <a href="index.php?page=automations" class="nav-link nav-automations tree-item">
+                              <i class="fas fa-robot nav-icon"></i>
+                              <p>Automations</p>
+                           </a>
+                      </li>
+
                   </ul>
                </li>
 
                 <li class="nav-item">
-                          <a href="./index.php?page=settings" class="nav-link nav-link5 nav-settings">
-                          <i class="nav-icon fas fa-cogs"></i>
-                          <p>Settings</p>
+                          <a href="./index.php?page=whatsapp_bot_status" class="nav-link nav-link5 nav-whatsapp_bot_status">
+                          <i class="nav-icon fa-brands fa-whatsapp"></i>
+                          <p>WhatsApp Bot Status</p>
                           </a>
+                 </li>
+
+                <li class="nav-item">
+                          <a href="#" class="nav-link nav-link5 nav-settings">
+                          <i class="nav-icon fas fa-cogs"></i>
+                          <p>Settings <i class="right fas fa-angle-left"></i></p>
+                          </a>
+                          <ul class="nav nav-treeview">
+                            <li class="nav-item">
+                                <a href="./index.php?page=settings" class="nav-link tree-item">
+                                    <i class="fas fa-sliders-h nav-icon"></i>
+                                    <p>General</p>
+                                </a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="./index.php?page=daraja_settings" class="nav-link tree-item">
+                                    <i class="fas fa-key nav-icon"></i>
+                                    <p>Daraja API Credentials</p>
+                                </a>
+                            </li>
+                            <li class="nav-item">
+                                <a href="./index.php?page=sms_settings" class="nav-link tree-item">
+                                    <i class="fas fa-sms nav-icon"></i>
+                                    <p>SMS Settings</p>
+                                </a>
+                            </li>
+                          </ul>
                  </li>
                  
                      <li class="nav-item">

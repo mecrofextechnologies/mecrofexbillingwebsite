@@ -9,38 +9,58 @@ if (!$creator_id) {
 }
 
 $full_name = $email = '';
+$is_fundraiser = false;
 try {
-    $stmt = $pdo->prepare("SELECT full_name, email FROM creators WHERE id = ?");
+    $stmt = $pdo->prepare("SELECT full_name, email, account_type FROM creators WHERE id = ?");
     $stmt->execute([$creator_id]);
     $creator = $stmt->fetch(PDO::FETCH_ASSOC);
     if ($creator) {
-        $full_name = $creator['full_name'] ?? 'Unknown';
-        $email     = $creator['email']     ?? 'Not set';
+        $creator = kc_decrypt_row($creator, ['full_name', 'email']);
+        $full_name     = $creator['full_name'] ?? 'Unknown';
+        $email         = $creator['email']     ?? 'Not set';
+        $is_fundraiser = ($creator['account_type'] ?? 'creator') === 'fundraiser';
     }
 } catch (PDOException $e) {
     $error = "Error fetching profile: " . $e->getMessage();
 }
 
+// Fundraiser accounts only ever request withdrawals through
+// withdraw_fundraiser.php (per fundraiser, see that file's INSERT into this
+// same withdrawal_requests table with campaign_id set) — so their history
+// here is scoped to campaign-linked rows, with the fundraiser title joined in.
 $withdrawals = [];
 try {
-    $stmt = $pdo->prepare("
-        SELECT id, amount, mpesa_number, status, transaction_code, requested_at, processed_at
-        FROM withdrawal_requests
-        WHERE creator_id = ?
-        ORDER BY requested_at DESC
-    ");
+    $sql = "
+        SELECT wr.id, wr.amount, wr.mpesa_number, wr.status, wr.transaction_code, wr.requested_at, wr.processed_at,
+               wr.campaign_id, fc.title AS campaign_title
+        FROM withdrawal_requests wr
+        LEFT JOIN fundraiser_campaigns fc ON fc.id = wr.campaign_id
+        WHERE wr.creator_id = ?" . ($is_fundraiser ? " AND wr.campaign_id IS NOT NULL" : "") . "
+        ORDER BY wr.requested_at DESC
+    ";
+    $stmt = $pdo->prepare($sql);
     $stmt->execute([$creator_id]);
-    $withdrawals = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $withdrawals = array_map(fn($w) => kc_decrypt_row($w, ['mpesa_number']), $stmt->fetchAll(PDO::FETCH_ASSOC));
 } catch (PDOException $e) {
     $error = "Error fetching withdrawal history: " . $e->getMessage();
 }
 
+// Fundraisers don't use the pooled my_balance wallet (see sidebar.php — My
+// Wallet / Withdraw Funds are hidden for them) — their available funds live
+// per-campaign in wallet_donations, so show the combined total across all
+// their fundraisers instead.
 $current_balance = 0.00;
 try {
-    $stmt = $pdo->prepare("SELECT amount FROM my_balance WHERE creator_id = ? LIMIT 1");
-    $stmt->execute([$creator_id]);
-    $balance_row     = $stmt->fetch(PDO::FETCH_ASSOC);
-    $current_balance = $balance_row ? (float)$balance_row['amount'] : 0.00;
+    if ($is_fundraiser) {
+        $stmt = $pdo->prepare("SELECT COALESCE(SUM(amount), 0) FROM wallet_donations WHERE creator_id = ?");
+        $stmt->execute([$creator_id]);
+        $current_balance = (float)$stmt->fetchColumn();
+    } else {
+        $stmt = $pdo->prepare("SELECT amount FROM my_balance WHERE creator_id = ? LIMIT 1");
+        $stmt->execute([$creator_id]);
+        $balance_row     = $stmt->fetch(PDO::FETCH_ASSOC);
+        $current_balance = $balance_row ? (float)$balance_row['amount'] : 0.00;
+    }
 } catch (PDOException $e) {
     $error = "Error fetching balance: " . $e->getMessage();
 }
@@ -51,10 +71,20 @@ $total_drawn = 0.00;
 foreach ($withdrawals as $w) {
     $s = strtolower($w['status']);
     if ($s === 'pending' || $s === 'processing') $pending++;
-    elseif ($s === 'completed') { $completed++; $total_drawn += (float)$w['amount']; }
+    elseif ($s === 'completed' || $s === 'successful') { $completed++; $total_drawn += (float)$w['amount']; }
     elseif ($s === 'failed' || $s === 'cancelled') $failed++;
 }
+// Fundraiser accounts use the purple theme everywhere else in their dashboard
+// (see includes/fundraiser_dashboard.php, my_profile.php, my_portfolio.php) —
+// this page's own --purple token already IS that exact shade, so fundraiser
+// mode just makes it the primary accent instead of navy.
+$mw_navy       = $is_fundraiser ? '#7c2fb0' : '#032d5d';
+$mw_navy_light = $is_fundraiser ? '#a855f7' : '#0a3d7a';
+$mw_hero_bg    = $is_fundraiser
+    ? 'linear-gradient(130deg, #7c2fb0 0%, #6b21a8 45%, #4c1d95 100%)'
+    : 'linear-gradient(130deg, #032d5d 0%, #0a3d7a 45%, #4f46e5 100%)';
 ?>
+<?php if (empty($kc_in_router)): ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -67,11 +97,12 @@ foreach ($withdrawals as $w) {
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"/>
   <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<?php endif; ?>
   <style>
     /* ── Design Tokens (identical to my_tickets) ── */
     :root {
-      --navy:        #032d5d;
-      --navy-light:  #0a3d7a;
+      --navy:        <?= $mw_navy ?>;
+      --navy-light:  <?= $mw_navy_light ?>;
       --crimson:     #b81236;
       --surface:     #ffffff;
       --bg:          #f0f4fa;
@@ -182,7 +213,7 @@ foreach ($withdrawals as $w) {
     /* ── Hero ── */
     .hero {
       position: relative; overflow: hidden;
-      background: linear-gradient(130deg, var(--navy) 0%, #0a3d7a 45%, #4f46e5 100%);
+      background: <?= $mw_hero_bg ?>;
       border-radius: var(--radius-lg); padding: 32px 36px; margin-bottom: 24px;
       box-shadow: var(--shadow-lg);
     }
@@ -303,6 +334,7 @@ foreach ($withdrawals as $w) {
     .badge-pending    { background: var(--amber-bg);  color: #92400e; }
     .badge-processing { background: var(--blue-bg);   color: #1e40af; }
     .badge-completed  { background: var(--green-bg);  color: #14532d; }
+    .badge-successful { background: var(--green-bg);  color: #14532d; }
     .badge-failed     { background: var(--red-bg);    color: #7f1d1d; }
     .badge-cancelled  { background: #f1f5f9;          color: var(--text-muted); }
 
@@ -360,6 +392,7 @@ foreach ($withdrawals as $w) {
     .m-card.pending::before    { background: var(--amber); }
     .m-card.processing::before { background: var(--blue); }
     .m-card.completed::before  { background: var(--green); }
+    .m-card.successful::before { background: var(--green); }
     .m-card.failed::before     { background: var(--red); }
     .m-card.cancelled::before  { background: var(--text-muted); }
     .m-card:hover { box-shadow: var(--shadow-md); }
@@ -409,6 +442,7 @@ foreach ($withdrawals as $w) {
     .stat-card:nth-child(4) { animation-delay: .20s; }
     .hero { animation: fadeUp .35s ease both; }
   </style>
+<?php if (empty($kc_in_router)): ?>
 </head>
 <body>
 
@@ -427,6 +461,12 @@ foreach ($withdrawals as $w) {
     Keychele
   </a>
   <div class="topbar-actions">
+    <?php if ($is_fundraiser): ?>
+    <a href="index.php" class="action-btn btn-purple">
+      <i class="fas fa-money-bill-transfer"></i>
+      <span>Withdraw From a Fundraiser</span>
+    </a>
+    <?php else: ?>
     <a href="request_withdrawals.php" class="action-btn btn-purple">
       <i class="fas fa-money-bill-transfer"></i>
       <span>New Withdrawal</span>
@@ -435,12 +475,14 @@ foreach ($withdrawals as $w) {
       <i class="fas fa-wallet"></i>
       <span class="desk-only" style="display:inline">Wallet</span>
     </a>
+    <?php endif; ?>
     <a href="index.php?page=dashboard" class="action-btn btn-navy" data-tip="Dashboard">
       <i class="fas fa-home"></i>
       <span class="desk-only" style="display:inline">Dashboard</span>
     </a>
   </div>
 </div>
+<?php endif; ?>
 
 <div class="page-wrap">
 
@@ -453,12 +495,12 @@ foreach ($withdrawals as $w) {
           Finance
         </div>
         <div class="hero-title">My Withdrawals</div>
-        <div class="hero-sub">Track all your payout requests in one place</div>
+        <div class="hero-sub"><?= $is_fundraiser ? 'Track payout requests across all your fundraisers' : 'Track all your payout requests in one place' ?></div>
       </div>
       <div class="hero-right desk-only">
-        <div class="hero-balance-label">Available Balance</div>
+        <div class="hero-balance-label"><?= $is_fundraiser ? 'Combined Available (all fundraisers)' : 'Available Balance' ?></div>
         <div class="hero-balance-val">KES <?= number_format($current_balance, 2) ?></div>
-        <div class="hero-balance-sub"><?= htmlspecialchars($full_name) ?></div>
+        <div class="hero-balance-sub"><?= $is_fundraiser ? 'Withdraw per fundraiser from the dashboard' : htmlspecialchars($full_name) ?></div>
       </div>
     </div>
   </div>
@@ -503,7 +545,7 @@ foreach ($withdrawals as $w) {
           <i class="fas fa-file-excel"></i> Export Excel
         </button>
         <?php endif; ?>
-        <a href="request_withdrawals.php" class="action-btn btn-purple" style="padding:7px 14px;font-size:.75rem">
+        <a href="<?= $is_fundraiser ? 'index.php' : 'request_withdrawals.php' ?>" class="action-btn btn-purple" style="padding:7px 14px;font-size:.75rem">
           <i class="fas fa-plus"></i> New Request
         </a>
       </div>
@@ -513,9 +555,9 @@ foreach ($withdrawals as $w) {
       <div class="empty-state">
         <div class="empty-icon"><i class="fas fa-money-bill-transfer"></i></div>
         <h4 style="font-size:1rem;font-weight:700;margin-bottom:6px">No Withdrawals Yet</h4>
-        <p style="font-size:.875rem;color:var(--text-muted);margin-bottom:20px">Make your first withdrawal request to see history here.</p>
-        <a href="request_withdrawals.php" class="action-btn btn-purple">
-          <i class="fas fa-plus"></i> Request Withdrawal
+        <p style="font-size:.875rem;color:var(--text-muted);margin-bottom:20px"><?= $is_fundraiser ? 'Withdraw from a fundraiser on your dashboard to see history here.' : 'Make your first withdrawal request to see history here.' ?></p>
+        <a href="<?= $is_fundraiser ? 'index.php' : 'request_withdrawals.php' ?>" class="action-btn btn-purple">
+          <i class="fas fa-plus"></i> <?= $is_fundraiser ? 'Go to My Fundraisers' : 'Request Withdrawal' ?>
         </a>
       </div>
 
@@ -534,6 +576,7 @@ foreach ($withdrawals as $w) {
           <option value="pending">Pending</option>
           <option value="processing">Processing</option>
           <option value="completed">Completed</option>
+          <option value="successful">Successful</option>
           <option value="failed">Failed</option>
           <option value="cancelled">Cancelled</option>
         </select>
@@ -546,6 +589,7 @@ foreach ($withdrawals as $w) {
             <tr>
               <th>#</th>
               <th>Requested</th>
+              <?php if ($is_fundraiser): ?><th>Fundraiser</th><?php endif; ?>
               <th>Amount (KES)</th>
               <th>M-Pesa Number</th>
               <th style="text-align:center">Status</th>
@@ -572,6 +616,11 @@ foreach ($withdrawals as $w) {
                   <?= date('g:i A', strtotime($wd['requested_at'])) ?>
                 </div>
               </td>
+              <?php if ($is_fundraiser): ?>
+              <td style="font-size:.8rem;font-weight:600;color:var(--text-pri);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                <?= htmlspecialchars($wd['campaign_title'] ?? '—') ?>
+              </td>
+              <?php endif; ?>
               <td>
                 <span class="amount-chip">
                   <?= number_format($wd['amount'], 2) ?>
@@ -586,6 +635,7 @@ foreach ($withdrawals as $w) {
                     'pending'    => 'badge-pending',
                     'processing' => 'badge-processing',
                     'completed'  => 'badge-completed',
+                    'successful' => 'badge-successful',
                     'failed'     => 'badge-failed',
                     'cancelled'  => 'badge-cancelled',
                   ];
@@ -628,6 +678,7 @@ foreach ($withdrawals as $w) {
             'pending'    => 'badge-pending',
             'processing' => 'badge-processing',
             'completed'  => 'badge-completed',
+            'successful' => 'badge-successful',
             'failed'     => 'badge-failed',
             'cancelled'  => 'badge-cancelled',
           ];
@@ -645,6 +696,12 @@ foreach ($withdrawals as $w) {
             <span class="badge <?= $bc ?>"><?= ucfirst($status) ?></span>
           </div>
           <div class="m-grid">
+            <?php if ($is_fundraiser): ?>
+            <div class="m-field" style="grid-column:1/-1">
+              <div class="m-field-label">Fundraiser</div>
+              <div class="m-field-val"><?= htmlspecialchars($wd['campaign_title'] ?? '—') ?></div>
+            </div>
+            <?php endif; ?>
             <div class="m-field">
               <div class="m-field-label">M-Pesa No.</div>
               <div class="m-field-val" style="font-family:'JetBrains Mono',monospace;font-size:.75rem"><?= htmlspecialchars($wd['mpesa_number']) ?></div>
@@ -698,9 +755,11 @@ foreach ($withdrawals as $w) {
     <div class="nav-fab-icon"><i class="fas fa-plus"></i></div>
     <span>Create</span>
   </a>
+  <?php if (!$is_fundraiser): ?>
   <a href="index.php?page=my_wallet" class="nav-item active">
     <i class="fas fa-wallet"></i>Wallet
   </a>
+  <?php endif; ?>
   <a href="index.php?page=profile" class="nav-item">
     <i class="fas fa-user"></i>Profile
   </a>
@@ -710,6 +769,7 @@ foreach ($withdrawals as $w) {
 // ── Preloader
 window.addEventListener('load', function () {
   var p = document.getElementById('preloader');
+  if (!p) return;
   p.style.opacity = '0';
   setTimeout(function () { p.style.display = 'none'; }, 400);
 });

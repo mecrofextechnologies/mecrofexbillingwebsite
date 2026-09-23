@@ -55,19 +55,8 @@ try {
         )
     ");
 
-    $count = $pdo->query("SELECT COUNT(*) FROM creatorwithdrawal_sms_settings")->fetchColumn();
-    if ($count == 0) {
-        $pdo->exec("
-            INSERT INTO creatorwithdrawal_sms_settings
-                (provider, api_id, api_token, sender_name, api_endpoint)
-            VALUES
-                ('talksasa',
-                 '2059',
-                 '2059|f4JXd7XM8Lwmi5QEDHik9onDsOkNMS0XuwXGhQq9ab191461',
-                 'TALKSASA',
-                 'https://bulksms.talksasa.com/api/v3/sms/send')
-        ");
-    }
+    // Credentials are configured in Admin01 → Settings → SMS Settings —
+    // no longer seeded from source code.
 
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS withdrawal_otp (
@@ -81,6 +70,14 @@ try {
         )
     ");
 } catch (PDOException $e) { /* tables already exist – ignore */ }
+
+// Automatic Daraja B2C payouts (see includes/withdrawal_payout.php).
+require_once __DIR__ . '/includes/withdrawal_payout.php';
+try {
+    kc_wd_ensure_schema($pdo);
+} catch (PDOException $e) {
+    error_log('Withdrawal schema upgrade failed: ' . $e->getMessage());
+}
 
 // ── SESSION CHECK ─────────────────────────────────────────────────────────────
 $creator_id = $_SESSION['creator_id'] ?? null;
@@ -103,6 +100,8 @@ $phone           = '';
 $current_balance = 0.00;
 $mpesa_number    = '';
 $has_pin         = false;
+$payout_phone    = null;
+$payout_phone_local = '';
 $success = $error = '';
 
 $charge_ranges = [
@@ -133,14 +132,19 @@ function getCharge(float $n, array $r): ?float {
 // ── FETCH CREATOR ─────────────────────────────────────────────────────────────
 $creator = null;
 try {
-    $stmt = $pdo->prepare("SELECT full_name, email, phone, withdrawal_pin FROM creators WHERE id = ?");
+    $stmt = $pdo->prepare("SELECT full_name, email, phone, withdrawal_pin, username FROM creators WHERE id = ?");
     $stmt->execute([$creator_id]);
     $creator = $stmt->fetch(PDO::FETCH_ASSOC);
     if ($creator) {
+        $creator = kc_decrypt_row($creator, ['full_name', 'email', 'phone']);
         $full_name = $creator['full_name'] ?? 'Unknown';
         $email     = $creator['email']     ?? '';
         $phone     = $creator['phone']     ?? '';
         $has_pin   = !empty($creator['withdrawal_pin']);
+        // Automatic payouts only ever go to the creator's registered number
+        // (the same one MecroGuard OTPs are sent to).
+        $payout_phone       = kc_normalize_phone($phone);
+        $payout_phone_local = $payout_phone ? '0' . substr($payout_phone, 3) : '';
     } else {
         $error = "Creator profile not found.";
         if ($isAjax) jsonResponse(['ok' => false, 'error' => $error]);
@@ -318,7 +322,7 @@ $step = (int)$_SESSION['wd_step'];
 
 // ── RESET ─────────────────────────────────────────────────────────────────────
 if (isset($_GET['reset'])) {
-    unset($_SESSION['wd_step'], $_SESSION['wd_data'],
+    unset($_SESSION['wd_step'], $_SESSION['wd_data'], $_SESSION['wd_idem'], $_SESSION['wd_mode'],
           $_SESSION['wd_masked_phone'], $_SESSION['wd_sms_sent']);
     if ($isAjax) {
         jsonResponse(['ok' => true, 'step' => 1, 'reload' => true]);
@@ -353,21 +357,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($error)) {
     /* ── STEP 1 : Withdrawal details ─────────────────────────────────────── */
     if ($step === 1 && isset($_POST['step1'])) {
         if (!$has_pin) {
-            $error = "You have not set a withdrawal PIN. <a href='withdrawal2factorauth.php' style='text-decoration:underline;font-weight:600'>Set your PIN first</a>.";
+            $error = "You have not set a withdrawal PIN. <a href='index.php?page=withdrawal2factorauth' style='text-decoration:underline;font-weight:600'>Set your PIN first</a>.";
         } elseif (empty($phone)) {
             $error = "No phone number registered. Please update your profile before withdrawing.";
+        } elseif (!$payout_phone) {
+            $error = "Your registered phone number is not a valid Kenyan M-Pesa number. Please update your profile (e.g. 0712345678).";
         } else {
-            $net_amount   = floatval($_POST['amount']      ?? 0);
-            $mpesa_number = trim($_POST['mpesa_number']   ?? '');
+            $raw_amount   = trim((string)($_POST['amount'] ?? ''));
+            $net_amount   = floatval($raw_amount);
+            // Payouts only ever go to the registered number; any posted value is ignored.
+            $mpesa_number = $payout_phone_local;
             $mpesa_name   = trim($_POST['mpesa_name']     ?? '');
             $charge       = getCharge($net_amount, $charge_ranges);
 
-            if (empty($mpesa_number)) {
-                $error = "M-Pesa phone number is required.";
-            } elseif (empty($mpesa_name)) {
+            if (empty($mpesa_name)) {
                 $error = "M-Pesa account name is required.";
-            } elseif ($net_amount <= 0) {
-                $error = "Amount must be greater than 0.";
+            } elseif (!preg_match('/^\d+$/', $raw_amount)) {
+                $error = "Enter a whole amount in shillings (no decimals).";
+            } elseif ($net_amount < KC_WD_MIN_AMOUNT || $net_amount > KC_WD_MAX_AMOUNT) {
+                $error = "Amount must be between KES " . number_format(KC_WD_MIN_AMOUNT) . " and KES " . number_format(KC_WD_MAX_AMOUNT) . ".";
             } elseif ($charge === null) {
                 $error = "Amount is outside supported withdrawal ranges.";
             } else {
@@ -376,12 +384,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($error)) {
                     $error = "Insufficient balance. You need KES " . number_format($total_deduct, 2)
                            . " but have KES " . number_format($current_balance, 2) . ".";
                 } else {
-                    $stmt = $pdo->prepare("SELECT COUNT(*) FROM withdrawal_requests WHERE creator_id=? AND status='pending'");
+                    $stmt = $pdo->prepare("SELECT COUNT(*) FROM withdrawal_requests WHERE creator_id=? AND campaign_id IS NULL AND status IN ('pending','processing')");
                     $stmt->execute([$creator_id]);
                     if ($stmt->fetchColumn() > 0) {
-                        $error = "You already have a pending withdrawal. Please wait for it to be processed.";
+                        $error = "You already have a withdrawal in progress. Please wait for it to complete.";
                     } else {
                         $_SESSION['wd_data'] = compact('net_amount', 'mpesa_number', 'mpesa_name', 'charge', 'total_deduct');
+                        // One key per confirmed withdrawal: resubmits, refreshes and
+                        // network retries of step 3 all map to the same payout.
+                        $_SESSION['wd_idem'] = bin2hex(random_bytes(16));
+                        // Automatic M-Pesa payout once B2C is configured; until
+                        // then the request goes to admin approval as before.
+                        $_SESSION['wd_mode'] = kc_wd_auto_enabled($pdo) ? 'auto' : 'manual';
                         $_SESSION['wd_step'] = 2;
                         $step = 2;
                     }
@@ -463,35 +477,68 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($error)) {
             $stmt->execute([$creator_id, $entered_otp]);
             $otp_row = $stmt->fetch(PDO::FETCH_ASSOC);
 
-            if (!$otp_row) {
+            // Single-use: only the request that flips used 0→1 may continue.
+            $otp_claimed = false;
+            if ($otp_row) {
+                $claim = $pdo->prepare("UPDATE withdrawal_otp SET used=1 WHERE id=? AND used=0");
+                $claim->execute([$otp_row['id']]);
+                $otp_claimed = $claim->rowCount() === 1;
+            }
+
+            if (!$otp_claimed) {
                 $error = "Invalid or expired MecroGuard code. Please try again.";
+            } elseif (!$payout_phone || empty($_SESSION['wd_idem'])) {
+                $error = "Session expired. Please start over.";
+                $_SESSION['wd_step'] = 1;
+                $step = 1;
+            } elseif (($_SESSION['wd_mode'] ?? 'manual') === 'manual') {
+                // Legacy admin-approval request (B2C not configured yet).
+                $manual = kc_wd_create_manual($pdo, [
+                    'creator_id'    => $creator_id,
+                    'username'      => $creator['username'] ?? '',
+                    'phone_display' => $payout_phone_local,
+                    'net'           => $wd['net_amount'],
+                    'charge'        => $wd['charge'],
+                    'total'         => $wd['total_deduct'],
+                    'idem_key'      => $_SESSION['wd_idem'],
+                    'notes'         => "Net: {$wd['net_amount']} | Fee: {$wd['charge']} | M-Pesa Name: " . ($wd['mpesa_name'] ?? '') . " | 2FA: PIN+OTP",
+                ]);
+                unset($_SESSION['wd_step'], $_SESSION['wd_data'], $_SESSION['wd_idem'], $_SESSION['wd_mode'],
+                      $_SESSION['wd_masked_phone'], $_SESSION['wd_sms_sent']);
+                if ($manual['ok']) {
+                    $step = 4;
+                    $success = "Withdrawal request submitted. It will be processed within 24 hours.";
+                    if ($isAjax) jsonResponse(['ok' => true, 'step' => 4, 'withdrawal' => ['status' => 'submitted', 'message' => $success]]);
+                } else {
+                    $error = htmlspecialchars($manual['error']);
+                    $step = 1;
+                }
             } else {
-                $pdo->prepare("UPDATE withdrawal_otp SET used=1 WHERE id=?")->execute([$otp_row['id']]);
                 try {
-                    $pdo->beginTransaction();
-                    $notes = "Net: {$wd['net_amount']} | Fee: {$wd['charge']} | M-Pesa Name: " . ($wd['mpesa_name'] ?? '') . " | 2FA: PIN+OTP";
-                    $stmt  = $pdo->prepare("
-                        INSERT INTO withdrawal_requests
-                        (creator_id,mpesa_number,amount,charge,total_amount,status,requested_at,notes)
-                        VALUES (?,?,?,?,?,'pending',NOW(),?)
-                    ");
-                    $stmt->execute([
-                        $creator_id,
-                        $wd['mpesa_number'],
-                        $wd['net_amount'],
-                        $wd['charge'],
-                        $wd['total_deduct'],
-                        $notes,
+                    $notes = "Net: {$wd['net_amount']} | Fee: {$wd['charge']} | M-Pesa Name: " . ($wd['mpesa_name'] ?? '') . " | 2FA: PIN+OTP | Auto B2C";
+                    $reserve = kc_wd_create_and_reserve($pdo, [
+                        'creator_id' => $creator_id,
+                        'username'   => $creator['username'] ?? '',
+                        'phone'      => $payout_phone,
+                        'net'        => $wd['net_amount'],
+                        'charge'     => $wd['charge'],
+                        'total'      => $wd['total_deduct'],
+                        'idem_key'   => $_SESSION['wd_idem'],
+                        'notes'      => $notes,
                     ]);
-                    $pdo->commit();
+                    if (!$reserve['ok']) {
+                        throw new RuntimeException($reserve['error']);
+                    }
 
-                    $success = "Withdrawal request submitted successfully!<br>"
-                             . "→ You will receive: <strong>KES " . number_format($wd['net_amount'], 2) . "</strong><br>"
-                             . "→ M-Pesa fee: KES " . number_format($wd['charge'], 2) . "<br>"
-                             . "→ Total deducted: <strong>KES " . number_format($wd['total_deduct'], 2) . "</strong><br>"
-                             . "→ Processing within 24 hours.";
+                    // Sends the B2C request (no-op if this payout was already dispatched).
+                    kc_wd_dispatch($pdo, $reserve['id']);
+                    $wd_status = kc_wd_public_status($pdo, (int)$creator_id, $reserve['reference']);
 
-                    // Send notification emails (non-blocking)
+                    $success = $wd_status['message'] ?? 'Your withdrawal is being processed by M-Pesa.';
+
+                    // Send notification emails (non-blocking) — only for a new
+                    // request, never again for a retried/duplicate submission.
+                    if (!$reserve['duplicate']) {
                     try {
                         $mail = new PHPMailer(true);
                         $mail->isSMTP();
@@ -514,8 +561,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($error)) {
                             <li>M-Pesa fee: KES " . number_format($wd['charge'], 2) . "</li>
                             <li>Total deducted: KES " . number_format($wd['total_deduct'], 2) . "</li>
                             <li>To: " . htmlspecialchars($wd['mpesa_number']) . "</li>
+                            <li>Reference: " . htmlspecialchars($reserve['reference']) . "</li>
                           </ul>
-                          <p style='color:#032d5d;font-weight:bold;'>Processing within 24 hours.</p>
+                          <p style='color:#032d5d;font-weight:bold;'>Your payout is being sent to M-Pesa automatically. You will receive an SMS once it completes.</p>
                         </div>";
 
                         $mail->addAddress($email, $full_name);
@@ -527,7 +575,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($error)) {
                         $admin_email = $pdo->query("SELECT email FROM admin LIMIT 1")->fetchColumn();
                         if ($admin_email) {
                             $adminHtml = "<div style='font-family:Arial;max-width:600px;padding:25px;'>
-                              <h2 style='color:#032d5d;'>New Withdrawal – 2FA Verified</h2>
+                              <h2 style='color:#032d5d;'>Automatic Withdrawal Initiated – 2FA Verified</h2>
+                              <p><strong>Reference:</strong> " . htmlspecialchars($reserve['reference']) . "</p>
                               <p><strong>Creator:</strong> " . htmlspecialchars($full_name) . " ({$email})</p>
                               <p><strong>Receive:</strong> KES " . number_format($wd['net_amount'], 2) . "</p>
                               <p><strong>Fee:</strong> KES " . number_format($wd['charge'], 2) . "</p>
@@ -542,18 +591,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($error)) {
                     } catch (Exception $e) {
                         error_log("Email error: " . $mail->ErrorInfo);
                     }
+                    }
 
-                    unset($_SESSION['wd_step'], $_SESSION['wd_data'],
+                    unset($_SESSION['wd_step'], $_SESSION['wd_data'], $_SESSION['wd_idem'],
                           $_SESSION['wd_masked_phone'], $_SESSION['wd_sms_sent']);
                     $step = 4;
 
                     if ($isAjax) {
-                        jsonResponse(['ok' => true, 'step' => 4, 'success' => $success]);
+                        jsonResponse(['ok' => true, 'step' => 4, 'withdrawal' => $wd_status]);
                     }
 
-                } catch (PDOException $e) {
+                } catch (RuntimeException $e) {
+                    // Validation outcome from the balance reservation (insufficient
+                    // balance, withdrawal already in progress, …) — safe to show.
+                    $error = htmlspecialchars($e->getMessage());
+                    unset($_SESSION['wd_step'], $_SESSION['wd_data'], $_SESSION['wd_idem'],
+                          $_SESSION['wd_masked_phone'], $_SESSION['wd_sms_sent']);
+                    $step = 1;
+                } catch (Throwable $e) {
                     if ($pdo->inTransaction()) $pdo->rollBack();
-                    $error = "Database error: " . htmlspecialchars($e->getMessage());
+                    kc_payment_log('withdrawals', 'Step 3 error for creator ' . (int)$creator_id . ': ' . get_class($e) . ' ' . substr($e->getMessage(), 0, 200));
+                    $error = "Something went wrong while processing your withdrawal. Please check your withdrawal history before trying again.";
                 }
             }
         }
@@ -565,6 +623,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && empty($error)) {
 }
 
 $wd_session = $_SESSION['wd_data'] ?? [];
+
+// Browser refresh / return visit while a payout is in flight: resume the
+// live status view instead of offering a new withdrawal.
+$active_wd_ref = null;
+try {
+    $stmt = $pdo->prepare("SELECT reference FROM withdrawal_requests WHERE creator_id = ? AND payout_method = 'b2c' AND status IN ('pending','processing') ORDER BY id DESC LIMIT 1");
+    $stmt->execute([$creator_id]);
+    $active_wd_ref = $stmt->fetchColumn() ?: null;
+} catch (PDOException $e) { $active_wd_ref = null; }
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -997,7 +1064,7 @@ $wd_session = $_SESSION['wd_data'] ?? [];
 
     /* ── Confirmation Modal ─────────────────────────────────────────────────── */
     .confirm-overlay {
-      display: none; position: fixed; inset: 0; z-index: 200;
+      display: none; position: fixed; inset: 0; z-index: 999999999;
       background: rgba(3,15,40,.65); backdrop-filter: blur(6px);
       align-items: center; justify-content: center; padding: 20px;
     }
@@ -1061,6 +1128,7 @@ $wd_session = $_SESSION['wd_data'] ?? [];
 </head>
 <body>
 
+<?php if (empty($kc_in_router)): ?>
 <!-- Preloader -->
 <div id="preloader">
   <div class="preloader-box">
@@ -1076,7 +1144,7 @@ $wd_session = $_SESSION['wd_data'] ?? [];
     Keychele
   </a>
   <div class="topbar-actions">
-    <a href="withdrawal2factorauth.php" class="action-btn btn-outline">
+    <a href="index.php?page=withdrawal2factorauth" class="action-btn btn-outline">
       <i class="fas fa-key"></i>
       <span><?= $has_pin ? 'Change PIN' : 'Set PIN' ?></span>
     </a>
@@ -1090,6 +1158,7 @@ $wd_session = $_SESSION['wd_data'] ?? [];
     </a>
   </div>
 </div>
+<?php endif; ?>
 
 <div class="page-wrap">
 
@@ -1344,6 +1413,9 @@ const PHP = {
   initError  : <?= json_encode($error) ?>,
   initSuccess: <?= json_encode($success) ?>,
   pageURL    : 'request_withdrawals.php',
+  statusURL  : 'withdrawal_status.php',
+  payoutPhone: <?= json_encode($payout_phone_local) ?>,
+  activeRef  : <?= json_encode($active_wd_ref) ?>,
 };
 
 const chargeRanges = <?= json_encode($charge_ranges) ?>;
@@ -1430,8 +1502,8 @@ function buildStep1() {
       <div class="section-label">M-Pesa Destination</div>
       <div class="field">
         <label>M-Pesa Phone Number <span style="color:var(--crimson)">*</span></label>
-        <input name="mpesa_number" type="tel" required placeholder="e.g. 0712345678 or 0112345678" autocomplete="tel" id="wd-mpesa-input">
-        <div class="field-hint"><i class="fas fa-info-circle" style="margin-right:4px"></i>Accepted: 07XXXXXXXX, 01XXXXXXXX, +2547XXXXXXXX, +2541XXXXXXXX</div>
+        <input name="mpesa_number" type="tel" readonly value="${escHtml(PHP.payoutPhone)}" placeholder="No valid number on your profile" id="wd-mpesa-input">
+        <div class="field-hint"><i class="fas fa-info-circle" style="margin-right:4px"></i>Withdrawals are sent automatically to your registered number. To change it, update your profile.</div>
       </div>
       <div class="field">
         <label>M-Pesa Account Name <span style="color:var(--crimson)">*</span></label>
@@ -1442,14 +1514,14 @@ function buildStep1() {
       <div class="mpesa-name-tip" id="mpesa-name-tip" style="display:none">
         <i class="fas fa-bell"></i>
         <div>
-          Our team will see <strong id="tip-name-preview">—</strong> as the M-Pesa account name when disbursing your funds.
-          Make sure it matches the registered name on the number you entered.
+          <strong id="tip-name-preview">—</strong> will be saved as the M-Pesa account name on this withdrawal.
+          Make sure it matches the registered name on the number above.
         </div>
       </div>
       <div class="section-label" style="margin-top:20px">Amount</div>
       <div class="field">
         <label>Amount to Receive (KES) <span style="color:var(--crimson)">*</span></label>
-        <input name="amount" type="number" min="1" step="1" required placeholder="e.g. 5000" id="wd-amount-input">
+        <input name="amount" type="number" min="<?= KC_WD_MIN_AMOUNT ?>" step="1" required placeholder="e.g. 5000" id="wd-amount-input">
         <div class="field-hint" id="fee-hint">
           <i class="fas fa-circle-info" style="margin-right:4px"></i>
           Safaricom fee added automatically. Max (inc. fee): KES ${fmtKES(PHP.balance)}
@@ -1477,6 +1549,9 @@ function buildStep2(wd) {
         <input name="withdrawal_pin" type="password" inputmode="numeric"
                maxlength="6" minlength="4" required placeholder="••••"
                class="pin-input" autocomplete="current-password">
+        <div class="field-hint" style="text-align:center;margin-top:8px">
+          <button type="button" class="resend-link" onclick="location.href='index.php?page=withdrawal2factorauth&forgot=1'">Forgot PIN?</button>
+        </div>
       </div>
       <div class="btn-row" style="margin-top:8px">
         <button type="button" onclick="goBack()" class="form-btn form-btn-outline"><i class="fas fa-arrow-left"></i> Back</button>
@@ -1520,16 +1595,81 @@ function buildStep3(wd, maskedPhone) {
     </form>`;
 }
 
-function buildStep4() {
-  return `
+function buildStep4(w) {
+  const status = w ? w.status : 'processing';
+  const historyBtn = `<a href="index.php?page=my_withdrawals" class="action-btn btn-navy" style="display:inline-flex;margin:0 6px">
+        <i class="fas fa-clock-rotate-left"></i> Withdrawal History</a>`;
+  if (status === 'successful') {
+    return `
     <div class="success-state">
       <div class="success-icon"><i class="fas fa-circle-check"></i></div>
-      <h3>Request Submitted!</h3>
-      <p>Your withdrawal has been queued for processing within 24 hours.</p>
-      <button type="button" class="action-btn btn-navy" style="display:inline-flex;margin:0 auto" onclick="resetFlow()">
+      <h3>Withdrawal Successful</h3>
+      <p>Your withdrawal of <strong>KSh ${escHtml(w.amount_display)}</strong> was successful.<br>
+         <strong>Transaction ID:</strong> <span style="font-family:'JetBrains Mono',monospace">${escHtml(w.transaction_id || '—')}</span></p>
+      ${historyBtn}
+      <button type="button" class="action-btn btn-navy" style="display:inline-flex;margin:0 6px" onclick="resetFlow()">
         <i class="fas fa-plus"></i> New Withdrawal
       </button>
     </div>`;
+  }
+  if (status === 'submitted') {
+    return `
+    <div class="success-state">
+      <div class="success-icon"><i class="fas fa-circle-check"></i></div>
+      <h3>Request Submitted!</h3>
+      <p>${escHtml(w.message)}</p>
+      ${historyBtn}
+      <button type="button" class="action-btn btn-navy" style="display:inline-flex;margin:0 6px" onclick="resetFlow()">
+        <i class="fas fa-plus"></i> New Withdrawal
+      </button>
+    </div>`;
+  }
+  if (status === 'failed') {
+    return `
+    <div class="success-state">
+      <div class="success-icon" style="background:var(--red-bg);color:var(--red)"><i class="fas fa-circle-xmark"></i></div>
+      <h3>Withdrawal Failed</h3>
+      <p>${escHtml(w.message)}</p>
+      ${historyBtn}
+      <button type="button" class="action-btn btn-navy" style="display:inline-flex;margin:0 6px" onclick="resetFlow()">
+        <i class="fas fa-rotate-right"></i> Try Again
+      </button>
+    </div>`;
+  }
+  const slow = w && w.slow;
+  return `
+    <div class="success-state">
+      <div class="success-icon" style="background:var(--amber-bg);color:var(--amber)">
+        <i class="fas ${slow ? 'fa-hourglass-half' : 'fa-spinner fa-spin'}"></i>
+      </div>
+      <h3>${slow ? 'Still Processing' : 'Sending to M-Pesa…'}</h3>
+      <p>${w ? `KSh ${escHtml(w.amount_display)} is being sent to your registered M-Pesa number.<br>` : ''}
+         ${slow ? 'M-Pesa is taking longer than usual. You will get an SMS once it completes, and it will appear in your withdrawal history.'
+                : 'This usually takes a few seconds. Please don\'t close this page.'}</p>
+      ${w ? `<p style="margin-top:-14px;font-size:.75rem">Reference: <span style="font-family:'JetBrains Mono',monospace">${escHtml(w.reference)}</span></p>` : ''}
+      ${slow ? historyBtn : ''}
+    </div>`;
+}
+
+let wdResult  = null;
+let pollTimer = null;
+function pollWithdrawal(ref, attempt = 0) {
+  clearTimeout(pollTimer);
+  const next = () => {
+    // ~3 minutes of polling, then fall back to SMS/history.
+    if (attempt >= 60) { wdResult = Object.assign({}, wdResult, { slow: true }); renderStep(4); return; }
+    pollTimer = setTimeout(() => pollWithdrawal(ref, attempt + 1), 3000);
+  };
+  fetch(PHP.statusURL + '?ref=' + encodeURIComponent(ref), { headers: { 'X-Requested-With': 'XMLHttpRequest' } })
+    .then(r => r.json())
+    .then(res => {
+      if (!res.ok) { next(); return; }
+      const changed = !wdResult || wdResult.status !== res.status;
+      wdResult = res;
+      if (changed || currentStep !== 4) renderStep(4);
+      if (res.status === 'pending' || res.status === 'processing') next();
+    })
+    .catch(next);
 }
 
 let currentStep = PHP.step;
@@ -1548,7 +1688,7 @@ function renderStep(step) {
       case 1: content.innerHTML = buildStep1(); attachStep1(); break;
       case 2: content.innerHTML = buildStep2(wdData); attachStep2(); break;
       case 3: content.innerHTML = buildStep3(wdData, maskedPhone); attachStep3(); break;
-      case 4: content.innerHTML = buildStep4(); break;
+      case 4: content.innerHTML = buildStep4(wdResult); break;
     }
     content.classList.remove('fading');
     bindDigitOnly();
@@ -1594,7 +1734,7 @@ function attachStep1() {
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     if (!PHP.hasPIN) {
-      showAlert('error', 'You have not set a withdrawal PIN. <a href="withdrawal2factorauth.php" style="text-decoration:underline;font-weight:600">Set your PIN first</a>.');
+      showAlert('error', 'You have not set a withdrawal PIN. <a href="index.php?page=withdrawal2factorauth" style="text-decoration:underline;font-weight:600">Set your PIN first</a>.');
       return;
     }
     const mpesa     = form.mpesa_number.value.trim();
@@ -1602,7 +1742,10 @@ function attachStep1() {
     const amount    = parseFloat(form.amount.value);
     const charge    = getCharge(amount);
 
-    if (!mpesa)          { showAlert('error', 'M-Pesa phone number is required.'); return; }
+    if (!mpesa)          { showAlert('error', 'Your profile has no valid M-Pesa number. Please update your profile first.'); return; }
+    if (!Number.isInteger(amount) || amount < <?= KC_WD_MIN_AMOUNT ?>) {
+      showAlert('error', 'Enter a whole amount of at least KES <?= KC_WD_MIN_AMOUNT ?>.'); return;
+    }
     if (!mpesaName)      { showAlert('error', 'M-Pesa account name is required.'); return; }
     if (!(amount > 0))   { showAlert('error', 'Amount must be greater than 0.'); return; }
     if (charge === null) { showAlert('error', 'Amount is outside supported withdrawal ranges.'); return; }
@@ -1681,12 +1824,15 @@ function attachStep3() {
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     if (form.otp_code.value.trim().length !== 6) { showAlert('error', 'Please enter the 6-digit MecroGuard code.'); return; }
-    setLoader(true, 'Submitting withdrawal…');
+    setLoader(true, 'Sending to M-Pesa…');
     try {
       const res = await ajaxPost(new FormData(form));
       if (res.ok) {
+        wdResult = res.withdrawal || null;
         renderStep(4);
-        if (res.success) setTimeout(() => showAlert('success', res.success), 300);
+        if (wdResult && (wdResult.status === 'pending' || wdResult.status === 'processing')) {
+          pollWithdrawal(wdResult.reference);
+        }
       } else {
         if (res.step === 1) { wdData = null; renderStep(1); showAlert('error', res.error); }
         else showAlert('error', res.error || 'Invalid or expired code. Please try again.');
@@ -1721,8 +1867,10 @@ async function goBack() {
   wdData = null; renderStep(1);
 }
 async function resetFlow() {
+  clearTimeout(pollTimer);
   try { await ajaxGet('reset=1'); } catch (_) {}
-  wdData = null; renderStep(1);
+  // Balance may have changed (debited, or refunded after a failure).
+  location.reload();
 }
 
 function bindDigitOnly() {
@@ -1742,8 +1890,15 @@ function switchTab(name, btn) {
 
 window.addEventListener('load', () => {
   const p = document.getElementById('preloader');
-  p.style.opacity = '0';
-  setTimeout(() => { p.style.display = 'none'; }, 400);
+  if (p) {
+    p.style.opacity = '0';
+    setTimeout(() => { p.style.display = 'none'; }, 400);
+  }
+  if (PHP.activeRef) {
+    renderStep(4);
+    pollWithdrawal(PHP.activeRef);
+    return;
+  }
   renderStep(PHP.step);
   if (PHP.initError)   showAlert('error',   PHP.initError);
   if (PHP.initSuccess) showAlert('success', PHP.initSuccess);

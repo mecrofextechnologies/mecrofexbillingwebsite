@@ -14,18 +14,34 @@ if (!include_once $connect_path) die("Database connection failed.");
 
 $creator_id = (int)$_SESSION['creator_id'];
 
+// Self-healing: dismiss flag for the "connect your WhatsApp" dashboard notice
+// (see includes/fundraiser_dashboard.php) — separate from wa_id_instance etc.
+// since this is just a UI preference, not a WhatsApp credential.
+try {
+    $col = $pdo->query("SHOW COLUMNS FROM creators LIKE 'hide_whatsapp_connect_notice'")->fetchAll();
+    if (empty($col)) {
+        $pdo->exec("ALTER TABLE creators ADD COLUMN hide_whatsapp_connect_notice TINYINT(1) NOT NULL DEFAULT 0");
+    }
+} catch (Throwable $e) {}
+
 // ── Creator info ─────────────────────────────────────────────────────────────
-$stmt = $pdo->prepare("SELECT c.username, c.withdrawal_pin, mp.full_name, mp.id AS page_id
+$stmt = $pdo->prepare("SELECT c.username, c.withdrawal_pin, c.account_type, c.hide_whatsapp_connect_notice, mp.full_name, mp.id AS page_id
                        FROM creators c
                        LEFT JOIN my_page mp ON c.id = mp.creator_id
                        WHERE c.id = ?");
 $stmt->execute([$creator_id]);
 $creator = $stmt->fetch(PDO::FETCH_ASSOC);
+if ($creator) { $creator = kc_decrypt_row($creator, ['full_name']); }
 
 $display_name = $creator['full_name'] ?? $creator['username'] ?? 'Creator';
 $initials     = strtoupper(substr($display_name, 0, 1));
 $has_page     = !empty($creator['page_id']);
 $has_pin      = !empty($creator['withdrawal_pin']);
+
+// account_type is a recent column — existing rows may still read NULL, so
+// treat anything other than 'fundraiser' as the 'creator' default.
+$account_type = ($creator['account_type'] ?? 'creator') === 'fundraiser' ? 'fundraiser' : 'creator';
+$is_fundraiser = $account_type === 'fundraiser';
 
 // ── Time & greeting ──────────────────────────────────────────────────────────
 date_default_timezone_set('Africa/Nairobi');
@@ -81,12 +97,116 @@ if (!$sms_row) {
     }
 }
 
+// ── Ensure fundraiser tables exist ────────────────────────────────────────────
+$pdo->exec("CREATE TABLE IF NOT EXISTS fundraiser_campaigns (
+    id            INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    creator_id    INT UNSIGNED NOT NULL,
+    title         VARCHAR(150) NOT NULL,
+    description   TEXT NULL,
+    goal_amount   DECIMAL(12,2) NOT NULL DEFAULT 0,
+    status        ENUM('active','closed') NOT NULL DEFAULT 'active',
+    created_at    DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_creator (creator_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+$pdo->exec("CREATE TABLE IF NOT EXISTS donations (
+    id             INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    creator_id     INT UNSIGNED NOT NULL,
+    campaign_id    INT UNSIGNED NULL,
+    donor_name     VARCHAR(120) NOT NULL,
+    donor_phone    VARCHAR(20) NULL,
+    donor_email    VARCHAR(150) NULL,
+    amount         DECIMAL(12,2) NOT NULL DEFAULT 0,
+    message        VARCHAR(500) NULL,
+    mpesa_receipt  VARCHAR(50) NULL,
+    status         ENUM('pending','completed','failed') NOT NULL DEFAULT 'pending',
+    created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_creator (creator_id),
+    INDEX idx_campaign (campaign_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
+// ── Fundraiser dashboard data ─────────────────────────────────────────────────
+$donationsReceived = 0; $amountRaised = 0.0; $totalDonors = 0; $totalCampaigns = 0;
+$recentDonations   = []; $donationStatusBreakdown = ['completed' => 0, 'pending' => 0, 'failed' => 0];
+$campaignWallets   = [];
+
+if ($is_fundraiser) {
+    $stmt = $pdo->prepare("SELECT
+            COUNT(*) AS cnt,
+            COALESCE(SUM(CASE WHEN status = 'completed' THEN amount ELSE 0 END), 0) AS raised
+        FROM donations WHERE creator_id = ?");
+    $stmt->execute([$creator_id]);
+    $dRow = $stmt->fetch(PDO::FETCH_ASSOC);
+    $donationsReceived = (int)$dRow['cnt'];
+    $amountRaised      = (float)$dRow['raised'];
+
+    // donor_phone/donor_email/donor_name are encrypted at rest, so a SQL
+    // COUNT(DISTINCT COALESCE(...)) can't dedupe repeat donors anymore —
+    // decrypt and dedupe in PHP instead, same phone > email > name priority.
+    $donorStmt = $pdo->prepare("SELECT donor_phone, donor_email, donor_name FROM donations WHERE creator_id = ?");
+    $donorStmt->execute([$creator_id]);
+    $donorRows = array_map(fn($d) => kc_decrypt_row($d, ['donor_name', 'donor_phone', 'donor_email']), $donorStmt->fetchAll(PDO::FETCH_ASSOC));
+    $totalDonors = count(array_unique(array_map(
+        fn($d) => $d['donor_phone'] ?: ($d['donor_email'] ?: $d['donor_name']),
+        $donorRows
+    )));
+
+    $stmt = $pdo->prepare("SELECT COUNT(*) FROM fundraiser_campaigns WHERE creator_id = ?");
+    $stmt->execute([$creator_id]);
+    $totalCampaigns = (int)$stmt->fetchColumn();
+
+    $stmt = $pdo->prepare("SELECT status, COUNT(*) AS cnt FROM donations WHERE creator_id = ? GROUP BY status");
+    $stmt->execute([$creator_id]);
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        if (isset($donationStatusBreakdown[$row['status']])) {
+            $donationStatusBreakdown[$row['status']] = (int)$row['cnt'];
+        }
+    }
+
+    $stmt = $pdo->prepare("
+        SELECT d.donor_name, d.donor_phone, d.amount, d.message, d.mpesa_receipt, d.status, d.created_at, fc.title AS campaign_title
+        FROM donations d
+        LEFT JOIN fundraiser_campaigns fc ON d.campaign_id = fc.id
+        WHERE d.creator_id = ?
+        ORDER BY d.created_at DESC LIMIT 20");
+    $stmt->execute([$creator_id]);
+    $recentDonations = array_map(fn($d) => kc_decrypt_row($d, ['donor_name', 'donor_phone']), $stmt->fetchAll(PDO::FETCH_ASSOC));
+
+    // Per-fundraiser wallet — each campaign's donations are credited into
+    // their own wallet_donations row (see callback.php) instead of being
+    // pooled into my_balance, so a specific fundraiser's funds can be
+    // withdrawn separately from the rest of the creator's balance.
+    // Starts FROM fundraiser_campaigns (not wallet_donations) so every
+    // fundraiser shows here — including brand-new ones with KES 0 raised —
+    // since WhatsApp needs to be connectable before the first donation lands.
+    try {
+        $col = $pdo->query("SHOW COLUMNS FROM fundraiser_campaigns LIKE 'whatsapp_group_url'")->fetchAll();
+        if (empty($col)) {
+            $pdo->exec("ALTER TABLE fundraiser_campaigns
+                ADD COLUMN whatsapp_group_url VARCHAR(255) NULL,
+                ADD COLUMN whatsapp_number VARCHAR(20) NULL,
+                ADD COLUMN whatsapp_group_chat_id VARCHAR(60) NULL,
+                ADD COLUMN whatsapp_group_name VARCHAR(150) NULL");
+        }
+        $stmt = $pdo->prepare("
+            SELECT fc.id AS campaign_id, fc.title, fc.status AS campaign_status,
+                   COALESCE(wd.amount, 0) AS amount, COALESCE(wd.donor_count, 0) AS donor_count,
+                   (fc.whatsapp_number IS NOT NULL AND fc.whatsapp_group_chat_id IS NOT NULL) AS whatsapp_live
+            FROM fundraiser_campaigns fc
+            LEFT JOIN wallet_donations wd ON wd.campaign_id = fc.id
+            WHERE fc.creator_id = ?
+            ORDER BY amount DESC, fc.created_at DESC");
+        $stmt->execute([$creator_id]);
+        $campaignWallets = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) { $campaignWallets = []; }
+}
+
 // ── Stats ─────────────────────────────────────────────────────────────────────
 $stmt = $pdo->prepare("SELECT COALESCE(amount, 0) FROM my_balance WHERE creator_id = ?");
 $stmt->execute([$creator_id]);
 $account_balance = number_format((float)$stmt->fetchColumn(), 2);
 
-$stmt = $pdo->prepare("SELECT COALESCE(SUM(amount), 0) FROM withdrawal_requests WHERE creator_id = ? AND status = 'completed'");
+$stmt = $pdo->prepare("SELECT COALESCE(SUM(amount), 0) FROM withdrawal_requests WHERE creator_id = ? AND status IN ('completed','successful')");
 $stmt->execute([$creator_id]);
 $withdrawals = number_format((float)$stmt->fetchColumn(), 2);
 
@@ -139,8 +259,8 @@ for ($i = 5; $i >= 0; $i--) {
 
     $stmt = $pdo->prepare("SELECT COALESCE(SUM(tp.quantity),0), COALESCE(SUM(tp.amount_paid),0)
         FROM ticket_purchases tp
-        INNER JOIN events e ON tp.event_id = e.id
-        WHERE e.creator_id = ? AND tp.status = 'paid'
+        INNER JOIN tickets t ON tp.ticket_id = t.id
+        WHERE t.creator_id = ? AND tp.status = 'completed'
           AND tp.created_at >= ? AND tp.created_at < DATE_ADD(?, INTERVAL 1 MONTH)");
     $stmt->execute([$creator_id, $month, $month]);
     $row = $stmt->fetch(PDO::FETCH_NUM);
@@ -157,32 +277,33 @@ for ($i = 5; $i >= 0; $i--) {
 $stmt = $pdo->prepare("
     SELECT tp.buyer_name, tp.buyer_email, tp.buyer_phone, tp.ticket_number,
            tp.amount_paid, tp.quantity, tp.status, tp.is_checked_in,
-           tp.mpesa_receipt, tp.created_at, e.title AS event_title
+           tp.mpesa_receipt, tp.created_at, t.title AS event_title
     FROM ticket_purchases tp
-    INNER JOIN events e ON tp.event_id = e.id
-    WHERE e.creator_id = ?
-    ORDER BY tp.created_at DESC LIMIT 8");
+    INNER JOIN tickets t ON tp.ticket_id = t.id
+    WHERE t.creator_id = ?
+    ORDER BY tp.created_at DESC LIMIT 20");
 $stmt->execute([$creator_id]);
 $recent_tickets = $stmt->fetchAll(PDO::FETCH_ASSOC);
+$recent_tickets = array_map(fn($row) => kc_decrypt_row($row, ['buyer_name','buyer_email','buyer_phone']), $recent_tickets);
 
 $stmt = $pdo->prepare("SELECT supporter_name, amount, mpesa_receipt, phone, status, created_at
     FROM support WHERE creator_id = ? ORDER BY created_at DESC LIMIT 6");
 $stmt->execute([$creator_id]);
-$recent_support = $stmt->fetchAll(PDO::FETCH_ASSOC);
+$recent_support = array_map(fn($s) => kc_decrypt_row($s, ['supporter_name', 'phone']), $stmt->fetchAll(PDO::FETCH_ASSOC));
 
 $stmt = $pdo->prepare("SELECT method, destination, mpesa_number, amount, charge, total_amount,
     transaction_code, status, requested_at FROM withdrawal_requests
     WHERE creator_id = ? ORDER BY requested_at DESC LIMIT 6");
 $stmt->execute([$creator_id]);
-$recent_withdrawals = $stmt->fetchAll(PDO::FETCH_ASSOC);
+$recent_withdrawals = array_map(fn($w) => kc_decrypt_row($w, ['mpesa_number']), $stmt->fetchAll(PDO::FETCH_ASSOC));
 
 $stmt = $pdo->prepare("
     SELECT tpv.ip_address, tpv.country, tpv.city, tpv.device, tpv.browser,
-           tpv.os, tpv.visited_at, tp.ticket_number, e.title AS event_title
+           tpv.os, tpv.visited_at, tp.ticket_number, t.title AS event_title
     FROM ticket_page_visits tpv
     INNER JOIN ticket_purchases tp ON tpv.ticket_id = tp.id
-    INNER JOIN events e ON tp.event_id = e.id
-    WHERE e.creator_id = ?
+    INNER JOIN tickets t ON tp.ticket_id = t.id
+    WHERE t.creator_id = ?
     ORDER BY tpv.visited_at DESC LIMIT 20");
 $stmt->execute([$creator_id]);
 $page_visits = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -191,6 +312,79 @@ $notif_visits  = count($page_visits);
 $notif_tickets = count($recent_tickets);
 $notif_support = count($recent_support);
 $total_notifs  = $notif_visits + $notif_tickets + $notif_support;
+
+// ── Ongoing tickets/events without a location set (notice bar) ───────────────
+$eventsNoLocation = [];
+try {
+    $locCol = $pdo->query("SHOW COLUMNS FROM tickets LIKE 'location_url'")->fetchAll();
+    if (empty($locCol)) {
+        $pdo->exec("ALTER TABLE tickets ADD COLUMN location_url VARCHAR(1000) DEFAULT NULL
+                    COMMENT 'Google Maps share URL for the venue'");
+    }
+    $stmtLoc = $pdo->prepare("
+        SELECT id, title FROM tickets
+        WHERE creator_id = ? AND start_date >= CURDATE()
+          AND (location_url IS NULL OR location_url = '')
+        ORDER BY id DESC
+    ");
+    $stmtLoc->execute([$creator_id]);
+    $eventsNoLocation = $stmtLoc->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) { $eventsNoLocation = []; }
+
+// ── Active/upcoming events (share-to-boost-sales notice) ─────────────────────
+$activeEventsForShare = [];
+try {
+    $stmtShare = $pdo->prepare("
+        SELECT id, title, venue, start_date, banner
+        FROM tickets
+        WHERE creator_id = ? AND start_date >= CURDATE()
+          AND (status = 'active' OR status IS NULL) AND is_hidden = 0
+        ORDER BY start_date ASC
+    ");
+    $stmtShare->execute([$creator_id]);
+    $activeEventsForShare = $stmtShare->fetchAll(PDO::FETCH_ASSOC);
+} catch (PDOException $e) { $activeEventsForShare = []; }
+
+// ── All-time ticket sales (overview card) ─────────────────────────────────────
+$COMMISSION_RATE = 0.035;
+$allTimeGross        = 0;
+$allTimeSold         = 0;
+try {
+    $stmtAt = $pdo->prepare("
+        SELECT COALESCE(SUM(tp.quantity),0)   AS total_sold,
+               COALESCE(SUM(tp.amount_paid),0) AS total_gross
+        FROM ticket_purchases tp
+        INNER JOIN tickets t ON tp.ticket_id = t.id
+        WHERE t.creator_id = ? AND tp.status = 'completed'
+    ");
+    $stmtAt->execute([$creator_id]);
+    $rowAt         = $stmtAt->fetch(PDO::FETCH_ASSOC);
+    $allTimeSold   = (int)$rowAt['total_sold'];
+    $allTimeGross  = (float)$rowAt['total_gross'];
+} catch (PDOException $e) { $allTimeGross = 0; $allTimeSold = 0; }
+$allTimeNet = $allTimeGross * (1 - $COMMISSION_RATE);
+
+// ── Ticket sales per event (with commission) ──────────────────────────────────
+$activeTicketSales = [];
+$salesTotalGross   = 0;
+try {
+    $stmt = $pdo->prepare("
+        SELECT t.id, t.title,
+               COALESCE(SUM(CASE WHEN tp.status = 'completed' THEN tp.quantity   ELSE 0 END), 0) AS tickets_sold,
+               COALESCE(SUM(CASE WHEN tp.status = 'completed' THEN tp.amount_paid ELSE 0 END), 0) AS gross_revenue
+        FROM tickets t
+        LEFT JOIN ticket_purchases tp ON tp.ticket_id = t.id
+        WHERE t.creator_id = ?
+        GROUP BY t.id, t.title
+        HAVING tickets_sold > 0
+        ORDER BY gross_revenue DESC
+    ");
+    $stmt->execute([$creator_id]);
+    $activeTicketSales = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    foreach ($activeTicketSales as $row) $salesTotalGross += $row['gross_revenue'];
+} catch (PDOException $e) { $activeTicketSales = []; }
+$salesTotalCommission = $salesTotalGross * $COMMISSION_RATE;
+$salesTotalNet        = $salesTotalGross - $salesTotalCommission;
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -363,6 +557,52 @@ h1,h2,h3,h4,h5,.mf { font-family: 'Montserrat', sans-serif; }
 .alert-page .alert-dismiss:hover { color: var(--text); background: rgba(5,46,100,0.06); }
 .alert-pin  .alert-dismiss { color: rgba(191,19,57,0.4); }
 .alert-pin  .alert-dismiss:hover { color: var(--red); background: rgba(191,19,57,0.08); }
+.alert-loc {
+  background: linear-gradient(120deg,#f0fdf8,#e8faf3);
+  border: 1px solid rgba(0,179,126,0.2);
+}
+.alert-loc::before { background: linear-gradient(180deg,var(--success),#00d68f); }
+.alert-loc .alert-icon { background: linear-gradient(135deg,var(--success),#00d68f); color: #fff; }
+.alert-loc .alert-title { color: #00714f; }
+.alert-loc .alert-btn { background: linear-gradient(135deg,var(--success),#00c97a); color: white; box-shadow: 0 4px 14px rgba(0,179,126,0.28); }
+.alert-loc .alert-dismiss { color: rgba(0,179,126,0.4); }
+.alert-share {
+  background: linear-gradient(120deg,#eef4ff,#e6edfc);
+  border: 1px solid rgba(5,46,100,0.18);
+}
+.alert-share::before { background: linear-gradient(180deg,var(--navy),var(--gold)); }
+.alert-share .alert-icon { background: linear-gradient(135deg,var(--navy),var(--navy-l)); color: var(--gold); }
+.alert-share .alert-title { color: var(--navy); }
+.alert-share .alert-btn { background: linear-gradient(135deg,var(--navy),var(--navy-l)); color: white; box-shadow: 0 4px 14px rgba(5,46,100,0.28); }
+.alert-share .alert-dismiss { color: rgba(5,46,100,0.4); }
+.alert-share .alert-dismiss:hover { color: var(--navy); background: rgba(5,46,100,0.08); }
+
+/* ── Share Modal ── */
+@keyframes shareCardIn { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: translateY(0); } }
+.share-overlay { position: fixed; inset: 0; z-index: 99998; background: rgba(5,20,50,.72); backdrop-filter: blur(8px); display: none; align-items: center; justify-content: center; padding: 20px; }
+.share-overlay.active { display: flex; }
+.share-card { position: relative; background: #fff; border-radius: var(--r-lg); padding: 2.1rem 1.8rem 1.8rem; width: min(420px,92vw); text-align: center; box-shadow: var(--sh-lg); animation: shareCardIn .35s cubic-bezier(.16,1,.3,1) both; }
+.share-close { position: absolute; top: 14px; right: 14px; width: 30px; height: 30px; border-radius: 50%; border: none; background: #f4f6fb; color: var(--muted); cursor: pointer; font-size: .85rem; display: flex; align-items: center; justify-content: center; }
+.share-close:hover { background: #e2e8f0; }
+.share-icon-wrap { width: 58px; height: 58px; border-radius: 50%; background: linear-gradient(135deg,var(--navy),var(--navy-l)); display: flex; align-items: center; justify-content: center; margin: 0 auto 1rem; box-shadow: 0 8px 24px rgba(5,46,100,.35); }
+.share-icon-wrap i { font-size: 1.35rem; color: var(--gold); }
+.share-title-txt { font-family: 'Montserrat', sans-serif; font-weight: 800; font-size: 1.05rem; color: var(--text); letter-spacing: -.02em; margin-bottom: 1.1rem; }
+.share-preview { display: flex; align-items: center; gap: 12px; background: #fafbfe; border: 1px solid var(--border); border-radius: var(--r); padding: .7rem; margin-bottom: 1.2rem; text-align: left; }
+.share-preview-img { width: 50px; height: 50px; border-radius: 9px; object-fit: cover; flex-shrink: 0; background: rgba(5,46,100,.08); }
+.share-preview-ico { display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg,var(--navy),var(--navy-l)); color: var(--gold); font-size: 1.05rem; }
+.share-preview-txt { min-width: 0; }
+.share-preview-title { font-family: 'Montserrat', sans-serif; font-weight: 700; font-size: .82rem; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.share-preview-desc { font-size: .7rem; color: var(--muted); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.share-btns { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 1rem; }
+.share-btn { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 12px 6px; border-radius: 12px; border: none; font-family: 'Montserrat', sans-serif; font-weight: 700; font-size: .68rem; cursor: pointer; text-decoration: none; transition: transform .15s; }
+.share-btn:hover { transform: translateY(-2px); }
+.share-btn i { font-size: 1.1rem; }
+.share-btn-wa { background: rgba(37,211,102,.1); color: #1da851; }
+.share-btn-fb { background: rgba(24,119,242,.1); color: #1877f2; }
+.share-btn-copy { background: rgba(5,46,100,.08); color: var(--navy); }
+.share-link-box { font-size: .7rem; color: var(--muted); background: #fafbfe; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; word-break: break-all; display: none; }
+.share-link-box.visible { display: block; }
+.alert-loc .alert-dismiss:hover { color: var(--success); background: rgba(0,179,126,0.08); }
 .pin-urgency {
   display: inline-flex; align-items: center; gap: 5px;
   background: rgba(191,19,57,0.1); border: 1px solid rgba(191,19,57,0.2);
@@ -472,9 +712,25 @@ h1,h2,h3,h4,h5,.mf { font-family: 'Montserrat', sans-serif; }
    STAT CARDS
 ════════════════════════════════════════════ */
 .stats-grid { display:grid;grid-template-columns:repeat(2,1fr);gap:1rem;margin-bottom:1.75rem; }
-@media (min-width:900px) { .stats-grid { grid-template-columns:repeat(3,1fr); } }
-.sc.sv { grid-column: span 2; }
-@media (min-width:900px) { .sc.sv { grid-column: span 1; } }
+@media (min-width:900px) { .stats-grid { grid-template-columns:repeat(4,1fr); } }
+
+/* ════════════════════════════════════════════
+   TICKET SALES SUMMARY STRIP
+════════════════════════════════════════════ */
+.ts-summary { display:grid;grid-template-columns:repeat(3,1fr);gap:.85rem;margin-bottom:1.1rem; }
+.ts-summary > div { min-width:0; }
+.ts-summary .ts-val { min-width:0; }
+.ts-summary .fin-wrap { min-width:0; flex-wrap:wrap; justify-content:center; }
+.ts-summary .fin-val { word-break:break-word; }
+@media (max-width:480px) {
+  .ts-summary { grid-template-columns:1fr; }
+}
+@media (min-width:481px) and (max-width:640px) {
+  .ts-summary .ts-val { font-size:1rem; }
+}
+@media (max-width:340px) {
+  .ts-event-grid { grid-template-columns:1fr!important; }
+}
 
 .sc {
   background:var(--card);border-radius:var(--r);padding:1.3rem 1.35rem 1.15rem;
@@ -490,14 +746,17 @@ h1,h2,h3,h4,h5,.mf { font-family: 'Montserrat', sans-serif; }
 .sc.sn::after  { background:var(--navy); }
 .sc.ss::after  { background:var(--success); }
 .sc.sv::after  { background:var(--sms); }
+.sc.st::after  { background:var(--red); }
 .sc.sn::before { background:var(--navy); }
 .sc.ss::before { background:var(--success); }
 .sc.sv::before { background:linear-gradient(90deg,var(--sms),var(--sms-l)); }
+.sc.st::before { background:linear-gradient(90deg,var(--red),var(--gold)); }
 .sc-top    { display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:0.9rem; }
 .sc-ico    { width:40px;height:40px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:1rem; }
 .sc.sn .sc-ico { background:rgba(5,46,100,0.1);color:var(--navy); }
 .sc.ss .sc-ico { background:rgba(0,179,126,0.1);color:var(--success); }
 .sc.sv .sc-ico { background:rgba(124,58,237,0.1);color:var(--sms); }
+.sc.st .sc-ico { background:rgba(191,19,57,0.1);color:var(--red); }
 .sc-badge  { font-family:'Montserrat',sans-serif;font-size:0.6rem;font-weight:700;padding:2px 8px;border-radius:100px; }
 .na        { background:rgba(107,122,153,0.1);color:var(--muted); }
 .live      { background:rgba(254,196,17,0.15);color:var(--gold-d); }
@@ -505,6 +764,17 @@ h1,h2,h3,h4,h5,.mf { font-family: 'Montserrat', sans-serif; }
 .sc-label  { font-size:0.73rem;color:var(--muted);margin-bottom:0.25rem; }
 .sc-val    { font-family:'Montserrat',sans-serif;font-weight:800;font-size:clamp(1.05rem,2vw,1.4rem);letter-spacing:-0.03em;color:var(--text);line-height:1; }
 .sc-sub    { font-size:0.67rem;color:var(--muted);margin-top:5px; }
+
+/* ── Show/hide toggle for financial figures ── */
+.fin-wrap { display:inline-flex; align-items:center; gap:7px; }
+.fin-val  { transition:filter .15s ease; }
+.fin-wrap.fin-hidden .fin-val { filter:blur(7px); user-select:none; }
+.fin-eye {
+    background:none; border:none; cursor:pointer; padding:2px;
+    color:var(--muted); opacity:.55; font-size:.82em; flex-shrink:0;
+    transition:opacity .15s;
+}
+.fin-eye:hover { opacity:1; }
 
 /* SMS extras */
 .sms-bonus-strip {
@@ -706,54 +976,13 @@ h1,h2,h3,h4,h5,.mf { font-family: 'Montserrat', sans-serif; }
 /* ════════════════════════════════════════════
    NOTIFICATIONS CARD
 ════════════════════════════════════════════ */
-.notif-card {
-  background:var(--card);border-radius:var(--r);
-  border:1px solid var(--border);box-shadow:var(--sh-sm);
-  overflow:hidden;margin-bottom:1.75rem;
-  animation:pop 0.55s cubic-bezier(0.16,1,0.3,1) .25s both;
+/* Recent buyers — responsive layout */
+.buyers-mobile  { display:block; }
+.buyers-desktop { display:none; }
+@media (min-width:700px) {
+  .buyers-mobile  { display:none; }
+  .buyers-desktop { display:block; }
 }
-.notif-hd {
-  display:flex;align-items:center;justify-content:space-between;
-  padding:1rem 1.35rem;border-bottom:1px solid var(--border);background:#fafbfd;
-}
-.notif-title-group { display:flex;align-items:center;gap:10px; }
-.notif-title { font-family:'Montserrat',sans-serif;font-weight:700;font-size:0.9rem;color:var(--text); }
-.notif-count-badge {
-  background:var(--red);color:white;
-  font-family:'Montserrat',sans-serif;font-size:0.6rem;font-weight:800;
-  padding:2px 7px;border-radius:100px;letter-spacing:0.04em;
-}
-
-/* Tabs */
-.notif-tabs {
-  display:flex;gap:0;border-bottom:1px solid var(--border);
-  padding:0 1.35rem;background:white;overflow-x:auto;
-  scrollbar-width:none;
-}
-.notif-tabs::-webkit-scrollbar { display:none; }
-.ntab {
-  display:flex;align-items:center;gap:7px;
-  padding:0.85rem 1.1rem;
-  font-family:'Montserrat',sans-serif;font-size:0.72rem;font-weight:700;
-  color:var(--muted);cursor:pointer;border:none;background:none;
-  border-bottom:2.5px solid transparent;margin-bottom:-1px;
-  white-space:nowrap;transition:color 0.18s,border-color 0.18s;
-}
-.ntab:hover { color:var(--text); }
-.ntab.active { color:var(--navy);border-bottom-color:var(--red); }
-.ntab .ntab-ct {
-  display:inline-flex;align-items:center;justify-content:center;
-  min-width:18px;height:18px;border-radius:9px;padding:0 5px;
-  font-size:0.58rem;font-weight:800;
-  background:rgba(5,46,100,0.08);color:var(--muted);
-  transition:background 0.18s,color 0.18s;
-}
-.ntab.active .ntab-ct { background:var(--red);color:white; }
-.ntab i { font-size:0.82rem; }
-
-/* Panels */
-.notif-panel { display:none;animation:fade-in 0.25s ease both; }
-.notif-panel.active { display:block; }
 
 /* ════════════════════════════════════════════
    TABLE STYLES
@@ -872,20 +1101,109 @@ h1,h2,h3,h4,h5,.mf { font-family: 'Montserrat', sans-serif; }
   text-decoration:none;transition:transform 0.2s,box-shadow 0.2s;
 }
 .mn-fab:hover { transform:scale(1.08) translateY(-2px);box-shadow:0 8px 24px rgba(191,19,57,0.5); }
+
+/* ════════════════════════════════════════════
+   ACCOUNT TYPE SWITCH
+════════════════════════════════════════════ */
+.mode-switch-row { display:flex;justify-content:flex-end;margin-bottom:1.1rem; }
+.mode-switch {
+  display:inline-flex;align-items:center;gap:2px;
+  background:var(--card);border:1px solid var(--border);border-radius:100px;
+  padding:4px;box-shadow:var(--sh-sm);position:relative;
+}
+.mode-switch-opt {
+  display:flex;align-items:center;gap:6px;
+  padding:8px 16px;border-radius:100px;border:none;background:transparent;
+  font-family:'Montserrat',sans-serif;font-weight:700;font-size:0.72rem;
+  color:var(--muted);cursor:pointer;transition:all 0.25s cubic-bezier(0.4,0,0.2,1);
+  white-space:nowrap;
+}
+.mode-switch-opt i { font-size:0.75rem; }
+.mode-switch-opt.active.mso-creator    { background:linear-gradient(135deg,var(--navy),var(--navy-l));color:#fff;box-shadow:0 3px 12px rgba(5,46,100,0.3); }
+.mode-switch-opt.active.mso-fundraiser { background:linear-gradient(135deg,#7c2fb0,#a855f7);color:#fff;box-shadow:0 3px 12px rgba(124,47,176,0.3); }
+.mode-switch-opt:disabled { cursor:wait;opacity:0.7; }
+@media(max-width:480px) { .mode-switch-opt span.msl { display:none; } }
+
+.ms-loader {
+  position:fixed;inset:0;z-index:9998;
+  background:rgba(13,13,13,.55);backdrop-filter:blur(3px);
+  display:none;align-items:center;justify-content:center;
+  flex-direction:column;gap:1.1rem;
+  opacity:0;transition:opacity .25s ease;
+}
+.ms-loader.show { display:flex; }
+.ms-loader.visible { opacity:1; }
+.ms-loader-spinner {
+  width:52px;height:52px;border-radius:50%;
+  border:4px solid rgba(255,255,255,.2);
+  border-top-color:var(--gold);
+  animation:ms-spin .8s linear infinite;
+}
+@keyframes ms-spin { to { transform:rotate(360deg); } }
+.ms-loader-text {
+  font-family:'Montserrat',sans-serif;font-weight:600;font-size:.95rem;
+  color:#fff;text-align:center;padding:0 1.5rem;
+}
+.ms-loader-text strong { color:var(--gold); font-weight:800; }
+
+/* ════════════════════════════════════════════
+   FUNDRAISER DASHBOARD
+════════════════════════════════════════════ */
+.fr-stats-grid { display:grid;grid-template-columns:repeat(2,1fr);gap:1rem;margin-bottom:1.75rem; }
+@media (min-width:900px) { .fr-stats-grid { grid-template-columns:repeat(4,1fr); } }
+.fr-card {
+  background:var(--card);border-radius:var(--r);padding:1.3rem 1.35rem 1.15rem;
+  border:1px solid var(--border);box-shadow:var(--sh-sm);
+  position:relative;overflow:hidden;transition:transform 0.22s,box-shadow 0.22s;
+  animation:pop 0.5s cubic-bezier(0.16,1,0.3,1) both;
+}
+.fr-card:hover { transform:translateY(-3px);box-shadow:var(--sh); }
+.fr-card::before { content:'';position:absolute;top:0;left:0;right:0;height:3px;border-radius:var(--r) var(--r) 0 0;background:linear-gradient(90deg,#7c2fb0,#a855f7); }
+.fr-card::after { content:'';position:absolute;bottom:-24px;right:-24px;width:80px;height:80px;border-radius:50%;pointer-events:none;opacity:0.12;background:#7c2fb0; }
+.fr-top  { display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:0.9rem; }
+.fr-ico  { width:40px;height:40px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:1rem;background:rgba(124,47,176,0.1);color:#7c2fb0; }
+.fr-label{ font-size:0.73rem;color:var(--muted);margin-bottom:0.25rem; }
+.fr-val  { font-family:'Montserrat',sans-serif;font-weight:800;font-size:clamp(1.05rem,2vw,1.4rem);letter-spacing:-0.03em;color:var(--text);line-height:1; }
+.fr-sub  { font-size:0.67rem;color:var(--muted);margin-top:5px; }
+
+.fr-pie-legend { display:flex;flex-direction:column;gap:10px;margin-top:0.5rem; }
+.fr-pie-legend-item { display:flex;align-items:center;gap:8px;font-size:0.78rem;color:var(--text); }
+.fr-pie-dot { width:10px;height:10px;border-radius:50%;flex-shrink:0; }
+.fr-pie-legend-item strong { margin-left:auto;font-family:'Montserrat',sans-serif; }
 </style>
 </head>
 <body>
 
+<?php if (empty($kc_in_router)): ?>
 <!-- ══ PRELOADER ══ -->
 <div id="preloader">
   <div class="pre-wordmark">Key<em>chele</em></div>
   <div class="pre-track"><div class="pre-fill"></div></div>
 </div>
+<?php endif; ?>
+
+<!-- ══ ACCOUNT TYPE SWITCH LOADER ══ -->
+<div id="modeSwitchLoader" class="ms-loader">
+  <div class="ms-loader-spinner"></div>
+  <div class="ms-loader-text">Please wait, switching you to <strong id="modeSwitchLoaderTarget">Fundraiser</strong>…</div>
+</div>
 
 <div class="kc-dash">
 
+  <!-- ══ ACCOUNT TYPE SWITCH ══ -->
+  <div class="mode-switch-row">
+    <div class="mode-switch" id="modeSwitch">
+      <button type="button" class="mode-switch-opt mso-creator <?= !$is_fundraiser ? 'active' : '' ?>" data-type="creator">
+        <i class="fa-solid fa-store"></i><span class="msl">Creator</span>
+      </button>
+      <button type="button" class="mode-switch-opt mso-fundraiser <?= $is_fundraiser ? 'active' : '' ?>" data-type="fundraiser">
+        <i class="fa-solid fa-hand-holding-heart"></i><span class="msl">Fundraiser</span>
+      </button>
+    </div>
+  </div>
+
   <!-- ══ NO-PAGE BANNER ══ -->
-  <?php if (!$has_page): ?>
+  <?php if (!$is_fundraiser && !$has_page): ?>
   <div class="dash-alert alert-page" id="noPageBanner">
     <div class="alert-icon"><i class="fa-solid fa-store"></i></div>
     <div class="alert-body">
@@ -930,56 +1248,152 @@ h1,h2,h3,h4,h5,.mf { font-family: 'Montserrat', sans-serif; }
   </div>
   <?php endif; ?>
 
-  <!-- ══ WELCOME CARD ══ -->
-  <div class="welcome-card">
-    <div class="wc-grid"></div>
-    <div class="wc-orb wc-orb-1"></div>
-    <div class="wc-orb wc-orb-2"></div>
-    <div class="wc-body">
-      <div>
-        <div class="wc-tag"><?= $wave ?> Creator Dashboard</div>
-        <h1 class="wc-name">
-          <span class="hi"><?= $greeting ?>, </span><br>
-          <span class="hl"><?= htmlspecialchars($display_name) ?></span>
-        </h1>
-        <div class="wc-date"><?= $current_date ?></div>
-        <div class="wc-chips">
-          <div class="wc-chip">
-            <div class="chip-ico" style="background:rgba(0,179,126,0.2)">
-              <i class="fa-solid fa-vault" style="color:#2ecc9a"></i>
-            </div>
-            <div>
-              <span class="chip-lbl">Balance</span>
-              <span class="chip-val">KSh <?= $account_balance ?></span>
-            </div>
+  <!-- ══ NO-LOCATION NOTICE (single) ══ -->
+  <?php if (!empty($eventsNoLocation)):
+    $locFirst = $eventsNoLocation[0];
+    $locCount = count($eventsNoLocation);
+    $locExtra = $locCount - 1;
+  ?>
+  <div class="dash-alert alert-loc" id="locNoticeSingle" style="animation-delay:.12s">
+    <div class="alert-icon"><i class="fa-solid fa-map-location-dot"></i></div>
+    <div class="alert-body">
+      <div class="alert-title">
+        "<?= htmlspecialchars($locFirst['title']) ?>" has no location set
+        <?php if ($locExtra > 0): ?>
+          <span style="font-family:'Montserrat',sans-serif;font-size:.6rem;font-weight:700;background:rgba(0,179,126,.15);color:var(--success);border:1px solid rgba(0,179,126,.25);border-radius:100px;padding:2px 8px;margin-left:6px;vertical-align:middle;">+<?= $locExtra ?> other<?= $locExtra > 1 ? 's' : '' ?></span>
+        <?php endif; ?>
+      </div>
+      <div class="alert-text">Your attendees can't find the venue — add a Google Maps link so no one gets lost.</div>
+    </div>
+    <div class="alert-actions">
+      <?php if ($locExtra > 0): ?>
+        <button class="alert-btn" onclick="openLocModal()" style="background:rgba(0,100,60,.12);color:#00714f;border:1.5px solid rgba(0,179,126,.3);box-shadow:none;">
+          <i class="fa-solid fa-list"></i> View All (<?= $locCount ?>)
+        </button>
+      <?php endif; ?>
+      <a href="https://keychele.co.ke/msanii/index.php?page=edit_ticket&id=<?= (int)$locFirst['id'] ?>&tab=location" class="alert-btn">
+        <i class="fa-solid fa-map-pin"></i> Set Location
+      </a>
+      <button class="alert-dismiss" onclick="dismissLocAll()" title="Dismiss">
+        <i class="fa-solid fa-xmark"></i>
+      </button>
+    </div>
+  </div>
+
+  <!-- ══ NO-LOCATION MODAL ══ -->
+  <div id="locModal" style="display:none;position:fixed;inset:0;z-index:99990;background:rgba(5,20,50,.72);backdrop-filter:blur(6px);align-items:center;justify-content:center;padding:16px;" onclick="if(event.target===this)closeLocModal()">
+    <div style="background:#fff;border-radius:20px;width:min(480px,100%);max-height:85vh;display:flex;flex-direction:column;box-shadow:0 24px 64px rgba(0,0,0,.35);animation:panelIn .32s cubic-bezier(.16,1,.3,1) both;" onclick="event.stopPropagation()">
+      <!-- Modal header -->
+      <div style="padding:1.25rem 1.5rem;border-bottom:1px solid rgba(5,46,100,.1);display:flex;align-items:center;justify-content:space-between;gap:1rem;flex-shrink:0;">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <div style="width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,var(--success),#00d68f);display:flex;align-items:center;justify-content:center;color:#fff;font-size:.85rem;flex-shrink:0;">
+            <i class="fa-solid fa-map-location-dot"></i>
           </div>
-          <a href="https://keychele.co.ke/msanii/index.php?page=sms_topup.php" class="wc-chip">
-            <div class="chip-ico" style="background:rgba(124,58,237,0.2)">
-              <i class="fa-solid fa-message" style="color:var(--sms-l)"></i>
-            </div>
-            <div>
-              <span class="chip-lbl">SMS Credits</span>
-              <span class="chip-val"><?= $sms_balance ?> SMS</span>
-            </div>
-          </a>
-          <div class="wc-chip">
-            <div class="chip-ico" style="background:rgba(124,47,176,0.25)">
-              <i class="fa-solid fa-users" style="color:#c084fc"></i>
-            </div>
-            <div>
-              <span class="chip-lbl">Referrals</span>
-              <span class="chip-val"><?= $ref_count ?> Creators</span>
-            </div>
+          <div>
+            <div style="font-family:'Montserrat',sans-serif;font-weight:800;font-size:.9rem;color:var(--text);">Events Without Location</div>
+            <div style="font-size:.7rem;color:var(--muted);margin-top:1px;"><?= $locCount ?> event<?= $locCount > 1 ? 's' : '' ?> need<?= $locCount === 1 ? 's' : '' ?> a venue map</div>
           </div>
         </div>
+        <button onclick="closeLocModal()" style="background:rgba(5,46,100,.06);border:none;cursor:pointer;width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:.8rem;flex-shrink:0;">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
       </div>
-      <div class="wc-right">
-        <div class="wc-avatar"><?= $initials ?></div>
-        <div class="wc-clock" id="liveClock"><?= $current_time ?></div>
-        <div class="wc-tz">Nairobi · EAT</div>
+      <!-- Modal list -->
+      <div style="overflow-y:auto;padding:.75rem .9rem;flex:1;">
+        <?php foreach ($eventsNoLocation as $i => $ev): ?>
+        <div style="display:flex;align-items:center;gap:.85rem;padding:.85rem .65rem;border-bottom:1px solid rgba(5,46,100,.06)<?= $i === $locCount-1 ? ';border-bottom:none' : '' ?>;">
+          <div style="flex-shrink:0;width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,rgba(5,46,100,.08),rgba(5,46,100,.04));border:1px solid rgba(5,46,100,.1);display:flex;align-items:center;justify-content:center;font-size:.75rem;color:var(--muted);">
+            <?= $i + 1 ?>
+          </div>
+          <div style="flex:1;min-width:0;">
+            <div style="font-family:'Montserrat',sans-serif;font-weight:700;font-size:.82rem;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+              <?= htmlspecialchars($ev['title']) ?>
+            </div>
+          </div>
+          <a href="https://keychele.co.ke/msanii/index.php?page=edit_ticket&id=<?= (int)$ev['id'] ?>&tab=location"
+             style="flex-shrink:0;display:inline-flex;align-items:center;gap:5px;padding:6px 13px;border-radius:8px;background:linear-gradient(135deg,var(--success),#00c97a);color:#fff;font-family:'Montserrat',sans-serif;font-weight:700;font-size:.7rem;text-decoration:none;white-space:nowrap;">
+            <i class="fa-solid fa-map-pin" style="font-size:.6rem;"></i> Set
+          </a>
+        </div>
+        <?php endforeach; ?>
+      </div>
+      <!-- Modal footer -->
+      <div style="padding:.85rem 1.5rem;border-top:1px solid rgba(5,46,100,.08);background:#fafbfd;border-radius:0 0 20px 20px;flex-shrink:0;display:flex;justify-content:flex-end;">
+        <button onclick="closeLocModal()" style="padding:8px 20px;border-radius:9px;border:1.5px solid rgba(5,46,100,.15);background:#fff;font-family:'Montserrat',sans-serif;font-weight:700;font-size:.78rem;color:var(--muted);cursor:pointer;">
+          Close
+        </button>
       </div>
     </div>
   </div>
+  <?php endif; ?>
+
+  <!-- ══ SHARE-TO-BOOST-SALES NOTICE ══ -->
+  <?php if (!empty($activeEventsForShare)):
+    $shareFirst = $activeEventsForShare[0];
+    $shareCount = count($activeEventsForShare);
+    $shareExtra = $shareCount - 1;
+    $shareUrl   = 'https://keychele.co.ke/ticket/' . (int)$shareFirst['id'];
+    $shareDesc  = '🎟️ Grab your ticket to ' . ($shareFirst['title'] ?: 'this event') . '! '
+                . ($shareFirst['start_date'] ? date('d M Y', strtotime($shareFirst['start_date'])) : '')
+                . ($shareFirst['venue'] ? ' at ' . $shareFirst['venue'] : '') . '. Purchase yours now!';
+    $shareBanner = !empty($shareFirst['banner']) ? 'uploads/banners/' . $shareFirst['banner'] : '';
+  ?>
+  <div class="dash-alert alert-share" id="shareNoticeSingle" style="animation-delay:.16s">
+    <div class="alert-icon"><i class="fa-solid fa-share-nodes"></i></div>
+    <div class="alert-body">
+      <div class="alert-title">
+        "<?= htmlspecialchars($shareFirst['title']) ?>" is live
+        <?php if ($shareExtra > 0): ?>
+          <span style="font-family:'Montserrat',sans-serif;font-size:.6rem;font-weight:700;background:rgba(5,46,100,.1);color:var(--navy);border:1px solid rgba(5,46,100,.2);border-radius:100px;padding:2px 8px;margin-left:6px;vertical-align:middle;">+<?= $shareExtra ?> other<?= $shareExtra > 1 ? 's' : '' ?></span>
+        <?php endif; ?>
+      </div>
+      <div class="alert-text">Share your ticket link on WhatsApp and Facebook to reach more buyers and boost sales.</div>
+    </div>
+    <div class="alert-actions">
+      <button class="alert-btn"
+              data-title="<?= htmlspecialchars($shareFirst['title'] ?? 'Event', ENT_QUOTES) ?>"
+              data-desc="<?= htmlspecialchars($shareDesc, ENT_QUOTES) ?>"
+              data-banner="<?= htmlspecialchars($shareBanner, ENT_QUOTES) ?>"
+              data-url="<?= htmlspecialchars($shareUrl, ENT_QUOTES) ?>"
+              onclick="openShareModal(this)">
+        <i class="fa-solid fa-share-nodes"></i> Share
+      </button>
+      <button class="alert-dismiss" onclick="dismissShareAll()" title="Dismiss">
+        <i class="fa-solid fa-xmark"></i>
+      </button>
+    </div>
+  </div>
+
+  <!-- ══ SHARE MODAL ══ -->
+  <div class="share-overlay" id="shareOverlay" role="dialog" aria-modal="true" aria-label="Share this ticket">
+    <div class="share-card">
+      <button type="button" class="share-close" onclick="closeShareModal()" aria-label="Close"><i class="fa-solid fa-xmark"></i></button>
+      <div class="share-icon-wrap"><i class="fa-solid fa-share-nodes"></i></div>
+      <div class="share-title-txt">Share This Event</div>
+
+      <div class="share-preview">
+        <img class="share-preview-img" id="sharePrevImg" src="" alt="" style="display:none;">
+        <div class="share-preview-img share-preview-ico" id="sharePrevIco"><i class="fa-solid fa-calendar-star"></i></div>
+        <div class="share-preview-txt">
+          <div class="share-preview-title" id="sharePrevTitle">—</div>
+          <div class="share-preview-desc" id="sharePrevDesc"></div>
+        </div>
+      </div>
+
+      <div class="share-btns">
+        <a href="#" id="shareWaBtn" target="_blank" rel="noopener" class="share-btn share-btn-wa"><i class="fa-brands fa-whatsapp"></i> WhatsApp</a>
+        <a href="#" id="shareFbBtn" target="_blank" rel="noopener" class="share-btn share-btn-fb"><i class="fa-brands fa-facebook"></i> Facebook</a>
+        <button type="button" id="shareCopyBtn" class="share-btn share-btn-copy" onclick="copyShareLink()"><i class="fa-solid fa-link"></i> Copy Link</button>
+      </div>
+
+      <div class="share-link-box" id="shareLinkBox"></div>
+    </div>
+  </div>
+  <?php endif; ?>
+
+  <?php if ($is_fundraiser): ?>
+  <?php include 'includes/fundraiser_dashboard.php'; ?>
+  <?php else: ?>
 
   <!-- ══ STAT CARDS ══ -->
   <div class="sec-hd"><div class="sec-title">Overview</div></div>
@@ -991,7 +1405,7 @@ h1,h2,h3,h4,h5,.mf { font-family: 'Montserrat', sans-serif; }
         <span class="sc-badge na">Lifetime</span>
       </div>
       <div class="sc-label">Total Withdrawn</div>
-      <div class="sc-val">KSh <?= $withdrawals ?></div>
+      <div class="sc-val"><span class="fin-wrap"><span class="fin-val">KSh <?= $withdrawals ?></span><button type="button" class="fin-eye" onclick="kcToggleFin(this)" title="Show/hide"><i class="fa-solid fa-eye"></i></button></span></div>
       <div class="sc-sub">Completed payouts only</div>
     </div>
 
@@ -1001,7 +1415,7 @@ h1,h2,h3,h4,h5,.mf { font-family: 'Montserrat', sans-serif; }
         <span class="sc-badge live">Live</span>
       </div>
       <div class="sc-label">Account Balance</div>
-      <div class="sc-val">KSh <?= $account_balance ?></div>
+      <div class="sc-val"><span class="fin-wrap"><span class="fin-val">KSh <?= $account_balance ?></span><button type="button" class="fin-eye" onclick="kcToggleFin(this)" title="Show/hide"><i class="fa-solid fa-eye"></i></button></span></div>
       <div class="sc-sub">Available to withdraw</div>
     </div>
 
@@ -1024,7 +1438,102 @@ h1,h2,h3,h4,h5,.mf { font-family: 'Montserrat', sans-serif; }
       </a>
     </div>
 
+    <div class="sc st">
+      <div class="sc-top">
+        <div class="sc-ico"><i class="fa-solid fa-ticket"></i></div>
+        <span class="sc-badge na">All-Time</span>
+      </div>
+      <div class="sc-label">Ticket Sales Earnings</div>
+      <div class="sc-val"><span class="fin-wrap"><span class="fin-val">KSh <?= number_format($allTimeNet, 2) ?></span><button type="button" class="fin-eye" onclick="kcToggleFin(this)" title="Show/hide"><i class="fa-solid fa-eye"></i></button></span></div>
+      <div class="sc-sub"><?= number_format($allTimeSold) ?> ticket<?= $allTimeSold !== 1 ? 's' : '' ?> sold &nbsp;·&nbsp; after 3.5% commission</div>
+    </div>
+
   </div>
+
+  <!-- ══ TICKET SALES ══ -->
+  <div class="sec-hd" style="margin-top:1.75rem">
+    <div class="sec-title">
+      <i class="fa-solid fa-ticket" style="font-size:.75rem;color:var(--red)"></i>
+      Ticket Sales
+    </div>
+  </div>
+
+  <?php if (empty($activeTicketSales)): ?>
+  <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:2.5rem 1rem;text-align:center;margin-bottom:1.75rem;">
+    <div style="width:52px;height:52px;border-radius:14px;background:rgba(191,19,57,0.06);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:1.25rem;color:var(--muted);margin:0 auto 0.75rem;">
+      <i class="fa-solid fa-ticket-simple"></i>
+    </div>
+    <p style="font-size:.84rem;color:var(--muted);">No ticket sales yet. Create an event and share it!</p>
+  </div>
+  <?php else: ?>
+
+  <!-- Summary strip -->
+  <div class="ts-summary">
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:1rem 1.2rem;text-align:center;box-shadow:var(--sh-sm);">
+      <div style="font-size:.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:.07em;font-family:'Montserrat',sans-serif;font-weight:700;margin-bottom:.35rem;">Total Revenue</div>
+      <div class="ts-val" style="font-family:'Montserrat',sans-serif;font-weight:900;font-size:1.15rem;color:var(--text);display:flex;justify-content:center;"><span class="fin-wrap"><span class="fin-val">KSh <?= number_format($salesTotalGross, 2) ?></span><button type="button" class="fin-eye" onclick="kcToggleFin(this)" title="Show/hide"><i class="fa-solid fa-eye"></i></button></span></div>
+    </div>
+    <div style="background:#fff5f7;border:1px solid rgba(191,19,57,.18);border-radius:var(--r);padding:1rem 1.2rem;text-align:center;box-shadow:var(--sh-sm);">
+      <div style="font-size:.65rem;color:var(--red);text-transform:uppercase;letter-spacing:.07em;font-family:'Montserrat',sans-serif;font-weight:700;margin-bottom:.35rem;">Commission (3.5%)</div>
+      <div class="ts-val" style="font-family:'Montserrat',sans-serif;font-weight:900;font-size:1.15rem;color:var(--red);display:flex;justify-content:center;"><span class="fin-wrap"><span class="fin-val">− KSh <?= number_format($salesTotalCommission, 2) ?></span><button type="button" class="fin-eye" onclick="kcToggleFin(this)" title="Show/hide"><i class="fa-solid fa-eye"></i></button></span></div>
+    </div>
+    <div style="background:linear-gradient(120deg,#052e64,#0a4494);border-radius:var(--r);padding:1rem 1.2rem;text-align:center;box-shadow:var(--sh);">
+      <div style="font-size:.65rem;color:rgba(255,255,255,.55);text-transform:uppercase;letter-spacing:.07em;font-family:'Montserrat',sans-serif;font-weight:700;margin-bottom:.35rem;">Your Earnings</div>
+      <div class="ts-val" style="font-family:'Montserrat',sans-serif;font-weight:900;font-size:1.15rem;color:#fec411;display:flex;justify-content:center;"><span class="fin-wrap"><span class="fin-val">KSh <?= number_format($salesTotalNet, 2) ?></span><button type="button" class="fin-eye" style="color:rgba(255,255,255,.55);" onclick="kcToggleFin(this)" title="Show/hide"><i class="fa-solid fa-eye"></i></button></span></div>
+    </div>
+  </div>
+
+  <!-- Per-event cards -->
+  <div class="ts-event-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(270px,1fr));gap:1rem;margin-bottom:1.75rem;">
+  <?php
+    $COMMISSION_RATE = 0.035;
+    foreach ($activeTicketSales as $i => $ev):
+      $gross      = (float)$ev['gross_revenue'];
+      $commission = $gross * $COMMISSION_RATE;
+      $net        = $gross - $commission;
+      $sold       = (int)$ev['tickets_sold'];
+      $total      = 0;
+      $pct        = 0;
+      $barColor   = $pct >= 100 ? '#00b37e' : ($pct >= 50 ? '#0a4494' : 'var(--red)');
+      $delay      = 0.05 + $i * 0.05;
+  ?>
+  <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:1.25rem 1.3rem;box-shadow:var(--sh-sm);position:relative;overflow:hidden;animation:pop .5s cubic-bezier(.16,1,.3,1) <?= $delay ?>s both;">
+    <div style="position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,var(--red),var(--gold));border-radius:var(--r) var(--r) 0 0;"></div>
+
+    <!-- Event name -->
+    <div style="font-family:'Montserrat',sans-serif;font-weight:800;font-size:.9rem;color:var(--text);margin-bottom:.25rem;line-height:1.3;padding-right:1rem;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;">
+      <?= htmlspecialchars($ev['title']) ?>
+    </div>
+
+    <!-- Tickets sold -->
+    <div style="font-size:.7rem;color:var(--muted);margin-bottom:.55rem;">
+      <?= $sold ?> ticket<?= $sold !== 1 ? 's' : '' ?> sold<?= $total > 0 ? ' of ' . $total : '' ?>
+    </div>
+
+    <!-- Progress bar -->
+    <?php if ($total > 0): ?>
+    <div style="height:5px;background:rgba(5,46,100,.08);border-radius:10px;margin-bottom:.9rem;overflow:hidden;">
+      <div style="height:100%;width:<?= $pct ?>%;background:<?= $barColor ?>;border-radius:10px;transition:width .8s ease;"></div>
+    </div>
+    <?php endif; ?>
+
+    <!-- Revenue rows -->
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:.45rem 0;border-top:1px solid rgba(5,46,100,.06);font-size:.76rem;">
+      <span style="color:var(--muted);">Gross Revenue</span>
+      <span style="font-family:'Montserrat',sans-serif;font-weight:700;color:var(--text);">KSh <?= number_format($gross, 2) ?></span>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:.45rem 0;border-top:1px solid rgba(5,46,100,.06);font-size:.76rem;">
+      <span style="color:var(--red);">Commission (3.5%)</span>
+      <span style="font-family:'Montserrat',sans-serif;font-weight:700;color:var(--red);">− KSh <?= number_format($commission, 2) ?></span>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:.55rem .75rem;margin-top:.5rem;background:linear-gradient(120deg,rgba(5,46,100,.06),rgba(5,46,100,.03));border-radius:8px;border:1px solid rgba(5,46,100,.1);">
+      <span style="font-family:'Montserrat',sans-serif;font-weight:800;font-size:.75rem;color:var(--navy);">Your Earnings</span>
+      <span style="font-family:'Montserrat',sans-serif;font-weight:900;font-size:.95rem;color:var(--success);">KSh <?= number_format($net, 2) ?></span>
+    </div>
+  </div>
+  <?php endforeach; ?>
+  </div>
+  <?php endif; ?>
 
   <!-- ══ ════════════════════════════════ ══
        REFERRAL EARNINGS SECTION
@@ -1074,7 +1583,7 @@ h1,h2,h3,h4,h5,.mf { font-family: 'Montserrat', sans-serif; }
         <span class="re-period">Today</span>
       </div>
       <div class="re-label">Earnings Today</div>
-      <div class="re-val">KSh <?= number_format($ref_today, 2) ?></div>
+      <div class="re-val"><span class="fin-wrap"><span class="fin-val">KSh <?= number_format($ref_today, 2) ?></span><button type="button" class="fin-eye" onclick="kcToggleFin(this)" title="Show/hide"><i class="fa-solid fa-eye"></i></button></span></div>
       <div class="re-sub"><?= date('d M Y') ?></div>
     </div>
 
@@ -1085,7 +1594,7 @@ h1,h2,h3,h4,h5,.mf { font-family: 'Montserrat', sans-serif; }
         <span class="re-period">This Week</span>
       </div>
       <div class="re-label">Earnings This Week</div>
-      <div class="re-val">KSh <?= number_format($ref_week, 2) ?></div>
+      <div class="re-val"><span class="fin-wrap"><span class="fin-val">KSh <?= number_format($ref_week, 2) ?></span><button type="button" class="fin-eye" onclick="kcToggleFin(this)" title="Show/hide"><i class="fa-solid fa-eye"></i></button></span></div>
       <div class="re-sub"><?= date('d M', strtotime('monday this week')) ?> – <?= date('d M') ?></div>
     </div>
 
@@ -1096,7 +1605,7 @@ h1,h2,h3,h4,h5,.mf { font-family: 'Montserrat', sans-serif; }
         <span class="re-period">This Month</span>
       </div>
       <div class="re-label">Earnings This Month</div>
-      <div class="re-val">KSh <?= number_format($ref_month, 2) ?></div>
+      <div class="re-val"><span class="fin-wrap"><span class="fin-val">KSh <?= number_format($ref_month, 2) ?></span><button type="button" class="fin-eye" onclick="kcToggleFin(this)" title="Show/hide"><i class="fa-solid fa-eye"></i></button></span></div>
       <div class="re-sub"><?= date('F Y') ?></div>
     </div>
 
@@ -1107,7 +1616,7 @@ h1,h2,h3,h4,h5,.mf { font-family: 'Montserrat', sans-serif; }
         <span class="re-period">Lifetime</span>
       </div>
       <div class="re-label">Total Referral Earned</div>
-      <div class="re-val">KSh <?= number_format($ref_total, 2) ?></div>
+      <div class="re-val"><span class="fin-wrap"><span class="fin-val">KSh <?= number_format($ref_total, 2) ?></span><button type="button" class="fin-eye" onclick="kcToggleFin(this)" title="Show/hide"><i class="fa-solid fa-eye"></i></button></span></div>
       <div class="re-sub">Since you joined Keychele</div>
     </div>
 
@@ -1170,246 +1679,146 @@ h1,h2,h3,h4,h5,.mf { font-family: 'Montserrat', sans-serif; }
 
   </div>
 
-  <!-- ══ NOTIFICATIONS ══ -->
-  <div class="sec-hd"><div class="sec-title">Notifications</div></div>
-  <div class="notif-card">
-    <div class="notif-hd">
-      <div class="notif-title-group">
-        <div class="notif-title">Activity Feed</div>
-        <?php if ($total_notifs > 0): ?>
-        <span class="notif-count-badge"><?= $total_notifs ?> new</span>
-        <?php endif; ?>
+  <!-- ══ RECENT BUYERS ══ -->
+  <div class="sec-hd">
+    <div class="sec-title">
+      <i class="fa-solid fa-bag-shopping" style="font-size:.75rem;color:var(--red)"></i>
+      Recent Ticket Purchases
+    </div>
+    <?php if (!empty($recent_tickets)): ?>
+    <span style="font-family:'Montserrat',sans-serif;font-size:.62rem;font-weight:700;color:var(--muted);background:rgba(5,46,100,.06);padding:3px 10px;border-radius:100px;border:1px solid var(--border);">
+      <?= count($recent_tickets) ?> recent
+    </span>
+    <?php endif; ?>
+  </div>
+
+  <div style="background:var(--card);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;margin-bottom:2rem;box-shadow:var(--sh-sm);">
+    <?php if (empty($recent_tickets)): ?>
+    <div style="padding:3rem 1rem;text-align:center;">
+      <div style="width:52px;height:52px;border-radius:14px;background:rgba(191,19,57,.06);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:1.25rem;color:var(--muted);margin:0 auto .75rem;">
+        <i class="fa-solid fa-ticket-simple"></i>
       </div>
+      <p style="font-size:.84rem;color:var(--muted);margin:0;">No ticket purchases yet. Share your event link to get started!</p>
     </div>
+    <?php else: ?>
 
-    <!-- Tabs -->
-    <div class="notif-tabs">
-      <button class="ntab active" onclick="switchTab('visits',this)">
-        <i class="fa-solid fa-ticket"></i> Ticket Visits
-        <span class="ntab-ct"><?= $notif_visits ?></span>
-      </button>
-      <button class="ntab" onclick="switchTab('tickets',this)">
-        <i class="fa-solid fa-bag-shopping"></i> Ticket Sales
-        <span class="ntab-ct"><?= $notif_tickets ?></span>
-      </button>
-      <button class="ntab" onclick="switchTab('support',this)">
-        <i class="fa-solid fa-heart"></i> Support
-        <span class="ntab-ct"><?= $notif_support ?></span>
-      </button>
-      <button class="ntab" onclick="switchTab('withdrawals',this)">
-        <i class="fa-solid fa-money-bill-transfer"></i> Withdrawals
-        <span class="ntab-ct"><?= count($recent_withdrawals) ?></span>
-      </button>
-    </div>
-
-    <!-- ── Tab: Ticket Visits ── -->
-    <div class="notif-panel active" id="tab-visits">
-      <div class="tbl-scroll">
-        <?php if (empty($page_visits)): ?>
-          <div class="empty">
-            <div class="empty-ico"><i class="fa-solid fa-eye-slash"></i></div>
-            <p>No page visits recorded yet</p>
+    <!-- mobile: card list -->
+    <div class="buyers-mobile">
+      <?php foreach ($recent_tickets as $i => $t):
+        $isPaid   = strtolower($t['status']) === 'paid';
+        $isFailed = strtolower($t['status']) === 'failed';
+        $dotColor = $isPaid ? 'var(--success)' : ($isFailed ? 'var(--red)' : 'var(--gold)');
+        $initials = strtoupper(substr(trim($t['buyer_name']), 0, 1) ?: '?');
+        $avatarBg = ['#052e64','#bf1339','#00b37e','#7c3aed','#0a4494'];
+        $bg       = $avatarBg[$i % count($avatarBg)];
+      ?>
+      <div style="display:flex;align-items:flex-start;gap:.85rem;padding:.95rem 1.1rem;border-bottom:1px solid var(--border)<?= $i === count($recent_tickets)-1 ? ';border-bottom:none' : '' ?>;">
+        <!-- Avatar -->
+        <div style="flex-shrink:0;width:38px;height:38px;border-radius:10px;background:<?= $bg ?>;display:flex;align-items:center;justify-content:center;font-family:'Montserrat',sans-serif;font-weight:800;font-size:.9rem;color:#fff;">
+          <?= htmlspecialchars($initials) ?>
+        </div>
+        <!-- Info -->
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:.5rem;flex-wrap:wrap;">
+            <div style="font-family:'Montserrat',sans-serif;font-weight:700;font-size:.82rem;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:160px;">
+              <?= htmlspecialchars($t['buyer_name']) ?>
+            </div>
+            <div style="font-family:'Montserrat',sans-serif;font-weight:800;font-size:.82rem;color:var(--red);white-space:nowrap;">
+              KSh <?= number_format($t['amount_paid'], 0) ?>
+            </div>
           </div>
-        <?php else: ?>
+          <div style="font-size:.7rem;color:var(--muted);margin:.15rem 0 .35rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+            <?= htmlspecialchars($t['event_title'] ?? '—') ?>
+          </div>
+          <div style="display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;">
+            <span style="font-size:.65rem;background:rgba(5,46,100,.06);border:1px solid var(--border);border-radius:6px;padding:2px 7px;color:var(--muted);font-family:'Montserrat',sans-serif;font-weight:600;">
+              #<?= htmlspecialchars($t['ticket_number']) ?>
+            </span>
+            <span style="font-size:.65rem;color:var(--muted);"><?= (int)$t['quantity'] ?> ticket<?= (int)$t['quantity'] !== 1 ? 's' : '' ?></span>
+            <span style="display:inline-flex;align-items:center;gap:4px;font-size:.65rem;color:var(--muted);">
+              <span style="width:6px;height:6px;border-radius:50%;background:<?= $dotColor ?>;display:inline-block;"></span>
+              <?= ucfirst($t['status']) ?>
+            </span>
+            <?php if ($t['is_checked_in']): ?>
+            <span style="font-size:.6rem;background:rgba(0,179,126,.1);color:var(--success);border-radius:6px;padding:2px 6px;font-family:'Montserrat',sans-serif;font-weight:700;">
+              <i class="fa-solid fa-check" style="font-size:.5rem"></i> Checked In
+            </span>
+            <?php endif; ?>
+            <span style="font-size:.63rem;color:var(--muted);margin-left:auto;"><?= date('d M, H:i', strtotime($t['created_at'])) ?></span>
+          </div>
+        </div>
+      </div>
+      <?php endforeach; ?>
+    </div>
+
+    <!-- desktop: table -->
+    <div class="buyers-desktop">
+      <div class="tbl-scroll">
         <table>
           <thead>
             <tr>
-              <th>Ticket #</th><th>Event</th><th>Location</th>
-              <th>Device</th><th>Browser / OS</th><th>IP</th><th>Visited</th>
+              <th>Buyer</th>
+              <th>Event</th>
+              <th>Ticket #</th>
+              <th style="text-align:center">Qty</th>
+              <th>Amount</th>
+              <th>M-Pesa Receipt</th>
+              <th>Status</th>
+              <th>Date</th>
             </tr>
           </thead>
           <tbody>
-            <?php foreach ($page_visits as $v): ?>
-            <tr>
-              <td><span class="tm"><?= htmlspecialchars($v['ticket_number'] ?? '—') ?></span></td>
-              <td>
-                <div class="tp" style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
-                  <?= htmlspecialchars($v['event_title'] ?? '—') ?>
-                </div>
-              </td>
-              <td>
-                <div class="tp" style="font-size:.76rem">
-                  <?= htmlspecialchars($v['city'] ?? '') ?>
-                  <?= (!empty($v['city']) && !empty($v['country'])) ? ', ' : '' ?>
-                  <?= htmlspecialchars($v['country'] ?? '—') ?>
-                </div>
-              </td>
-              <td>
-                <div style="display:flex;align-items:center;gap:6px">
-                  <span class="dev-ico">
-                    <?php
-                      $dev = strtolower($v['device'] ?? '');
-                      $ico = (str_contains($dev,'mobile') || str_contains($dev,'phone'))
-                           ? 'mobile-screen-button'
-                           : (str_contains($dev,'tablet') ? 'tablet-screen-button' : 'desktop');
-                    ?>
-                    <i class="fa-solid fa-<?= $ico ?>"></i>
-                  </span>
-                  <span class="ts"><?= htmlspecialchars($v['device'] ?? '—') ?></span>
-                </div>
-              </td>
-              <td>
-                <div class="tp" style="font-size:.74rem"><?= htmlspecialchars($v['browser'] ?? '—') ?></div>
-                <div class="ts"><?= htmlspecialchars($v['os'] ?? '') ?></div>
-              </td>
-              <td><span class="tm"><?= htmlspecialchars($v['ip_address'] ?? '—') ?></span></td>
-              <td style="color:var(--muted);font-size:.7rem;white-space:nowrap"><?= date('d M, H:i', strtotime($v['visited_at'])) ?></td>
-            </tr>
-            <?php endforeach; ?>
-          </tbody>
-        </table>
-        <?php endif; ?>
-      </div>
-    </div>
-
-    <!-- ── Tab: Ticket Sales ── -->
-    <div class="notif-panel" id="tab-tickets">
-      <div class="tbl-scroll">
-        <?php if (empty($recent_tickets)): ?>
-          <div class="empty">
-            <div class="empty-ico"><i class="fa-solid fa-ticket-simple"></i></div>
-            <p>No ticket purchases yet</p>
-          </div>
-        <?php else: ?>
-        <table>
-          <thead>
-            <tr>
-              <th>Buyer</th><th>Event</th><th>Ticket #</th>
-              <th>Qty</th><th>Amount</th><th>Receipt</th><th>Status</th><th>Date</th>
-            </tr>
-          </thead>
-          <tbody>
-            <?php foreach ($recent_tickets as $t):
-              $sc = match(strtolower($t['status'])) {
-                'paid'    => 'b-paid',
-                'pending' => 'b-pending',
-                'failed'  => 'b-failed',
-                default   => 'b-pending'
-              };
+            <?php foreach ($recent_tickets as $i => $t):
+              $isPaid   = strtolower($t['status']) === 'paid';
+              $isFailed = strtolower($t['status']) === 'failed';
+              $sc       = $isPaid ? 'b-paid' : ($isFailed ? 'b-failed' : 'b-pending');
+              $initials = strtoupper(substr(trim($t['buyer_name']), 0, 1) ?: '?');
+              $avatarBg = ['#052e64','#bf1339','#00b37e','#7c3aed','#0a4494'];
+              $bg       = $avatarBg[$i % count($avatarBg)];
             ?>
             <tr>
               <td>
-                <div class="tp"><?= htmlspecialchars($t['buyer_name']) ?></div>
-                <div class="ts"><?= htmlspecialchars($t['buyer_phone'] ?? '') ?></div>
+                <div style="display:flex;align-items:center;gap:.6rem;">
+                  <div style="flex-shrink:0;width:32px;height:32px;border-radius:8px;background:<?= $bg ?>;display:flex;align-items:center;justify-content:center;font-family:'Montserrat',sans-serif;font-weight:800;font-size:.75rem;color:#fff;">
+                    <?= htmlspecialchars($initials) ?>
+                  </div>
+                  <div>
+                    <div class="tp"><?= htmlspecialchars($t['buyer_name']) ?></div>
+                    <div class="ts"><?= htmlspecialchars($t['buyer_phone'] ?? '') ?></div>
+                  </div>
+                </div>
               </td>
               <td>
-                <div class="tp" style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.76rem">
+                <div class="tp" style="max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:.76rem;">
                   <?= htmlspecialchars($t['event_title'] ?? '—') ?>
                 </div>
               </td>
               <td><span class="tm"><?= htmlspecialchars($t['ticket_number']) ?></span></td>
-              <td style="text-align:center">
-                <span style="font-family:'Montserrat',sans-serif;font-weight:700;font-size:0.85rem">
-                  <?= (int)$t['quantity'] ?>
-                </span>
+              <td style="text-align:center;">
+                <span style="font-family:'Montserrat',sans-serif;font-weight:700;font-size:.85rem;"><?= (int)$t['quantity'] ?></span>
               </td>
-              <td class="ta" style="color:var(--red)">KSh <?= number_format($t['amount_paid'], 0) ?></td>
+              <td><span style="font-family:'Montserrat',sans-serif;font-weight:800;color:var(--red);font-size:.82rem;">KSh <?= number_format($t['amount_paid'], 0) ?></span></td>
               <td><span class="tm"><?= htmlspecialchars($t['mpesa_receipt'] ?? '—') ?></span></td>
               <td>
-                <span class="bdg <?= $sc ?>"><?= ucfirst($t['status']) ?></span>
-                <?php if ($t['is_checked_in']): ?>
-                  <br><span class="in-tag"><i class="fa-solid fa-check" style="font-size:.5rem"></i> In</span>
-                <?php endif; ?>
-              </td>
-              <td style="color:var(--muted);font-size:.7rem;white-space:nowrap"><?= date('d M, H:i', strtotime($t['created_at'])) ?></td>
-            </tr>
-            <?php endforeach; ?>
-          </tbody>
-        </table>
-        <?php endif; ?>
-      </div>
-    </div>
-
-    <!-- ── Tab: Support ── -->
-    <div class="notif-panel" id="tab-support">
-      <div class="tbl-scroll">
-        <?php if (empty($recent_support)): ?>
-          <div class="empty">
-            <div class="empty-ico"><i class="fa-solid fa-heart"></i></div>
-            <p>No support received yet</p>
-          </div>
-        <?php else: ?>
-        <table>
-          <thead>
-            <tr><th>Supporter</th><th>Amount</th><th>Receipt</th><th>Status</th><th>Date</th></tr>
-          </thead>
-          <tbody>
-            <?php foreach ($recent_support as $s):
-              $sc = match(strtolower($s['status'])) {
-                'completed','success' => 'b-completed',
-                'pending'             => 'b-pending',
-                'failed'              => 'b-failed',
-                default               => 'b-pending'
-              };
-            ?>
-            <tr>
-              <td>
-                <div class="tp"><?= htmlspecialchars($s['supporter_name'] ?? 'Anonymous') ?></div>
-                <div class="ts"><?= htmlspecialchars($s['phone'] ?? '') ?></div>
-              </td>
-              <td class="ta" style="color:var(--gold-d)">KSh <?= number_format($s['amount'], 0) ?></td>
-              <td><span class="tm"><?= htmlspecialchars($s['mpesa_receipt'] ?? '—') ?></span></td>
-              <td><span class="bdg <?= $sc ?>"><?= ucfirst($s['status']) ?></span></td>
-              <td style="color:var(--muted);font-size:.7rem;white-space:nowrap"><?= date('d M, H:i', strtotime($s['created_at'])) ?></td>
-            </tr>
-            <?php endforeach; ?>
-          </tbody>
-        </table>
-        <?php endif; ?>
-      </div>
-    </div>
-
-    <!-- ── Tab: Withdrawals ── -->
-    <div class="notif-panel" id="tab-withdrawals">
-      <div class="tbl-scroll">
-        <?php if (empty($recent_withdrawals)): ?>
-          <div class="empty">
-            <div class="empty-ico"><i class="fa-solid fa-hand-holding-dollar"></i></div>
-            <p>No withdrawal requests yet</p>
-          </div>
-        <?php else: ?>
-        <table>
-          <thead>
-            <tr>
-              <th>Method</th><th>Destination</th><th>Amount</th>
-              <th>Charge</th><th>Total</th><th>Code</th><th>Status</th><th>Requested</th>
-            </tr>
-          </thead>
-          <tbody>
-            <?php foreach ($recent_withdrawals as $w):
-              $sc = match(strtolower($w['status'])) {
-                'completed'         => 'b-completed',
-                'pending'           => 'b-pending',
-                'processing'        => 'b-processing',
-                'rejected','failed' => 'b-failed',
-                default             => 'b-pending'
-              };
-            ?>
-            <tr>
-              <td>
-                <div style="display:inline-flex;align-items:center;gap:7px">
-                  <span style="width:28px;height:28px;border-radius:7px;background:rgba(5,46,100,0.08);display:inline-flex;align-items:center;justify-content:center;color:var(--navy);font-size:.72rem">
-                    <i class="fa-solid fa-<?= strtolower($w['method'] ?? '') === 'mpesa' ? 'mobile-screen-button' : 'building-columns' ?>"></i>
-                  </span>
-                  <span class="tp" style="font-size:.76rem"><?= htmlspecialchars(strtoupper($w['method'] ?? '—')) ?></span>
+                <div style="display:flex;flex-direction:column;gap:3px;align-items:flex-start;">
+                  <span class="bdg <?= $sc ?>"><?= ucfirst($t['status']) ?></span>
+                  <?php if ($t['is_checked_in']): ?>
+                  <span class="in-tag"><i class="fa-solid fa-check" style="font-size:.5rem"></i> Checked In</span>
+                  <?php endif; ?>
                 </div>
               </td>
-              <td><span class="tm"><?= htmlspecialchars($w['destination'] ?? $w['mpesa_number'] ?? '—') ?></span></td>
-              <td class="ta" style="color:var(--navy)">KSh <?= number_format($w['amount'], 0) ?></td>
-              <td style="color:var(--muted);font-size:.74rem">KSh <?= number_format($w['charge'] ?? 0, 0) ?></td>
-              <td class="ta" style="color:var(--red)">KSh <?= number_format($w['total_amount'], 0) ?></td>
-              <td><span class="tm"><?= htmlspecialchars($w['transaction_code'] ?? '—') ?></span></td>
-              <td><span class="bdg <?= $sc ?>"><?= ucfirst($w['status']) ?></span></td>
-              <td style="color:var(--muted);font-size:.7rem;white-space:nowrap"><?= date('d M Y', strtotime($w['requested_at'])) ?></td>
+              <td style="color:var(--muted);font-size:.7rem;white-space:nowrap;"><?= date('d M, H:i', strtotime($t['created_at'])) ?></td>
             </tr>
             <?php endforeach; ?>
           </tbody>
         </table>
-        <?php endif; ?>
       </div>
     </div>
 
-  </div><!-- /notif-card -->
+    <?php endif; ?>
+  </div>
+
+  <?php endif; ?>
 
 </div><!-- /kc-dash -->
 
@@ -1433,10 +1842,156 @@ h1,h2,h3,h4,h5,.mf { font-family: 'Montserrat', sans-serif; }
 </nav>
 
 <script>
+// ── Account type switch ──
+(function() {
+  var wrap   = document.getElementById('modeSwitch');
+  var loader = document.getElementById('modeSwitchLoader');
+  var target = document.getElementById('modeSwitchLoaderTarget');
+  if (!wrap) return;
+
+  var labels = { creator: 'Creator', fundraiser: 'Fundraiser' };
+
+  function showLoader(type) {
+    if (!loader) return;
+    if (target) target.textContent = labels[type] || type;
+    loader.classList.add('show');
+    requestAnimationFrame(function () { loader.classList.add('visible'); });
+  }
+  function hideLoader() {
+    if (!loader) return;
+    loader.classList.remove('visible');
+    setTimeout(function () { loader.classList.remove('show'); }, 250);
+  }
+
+  wrap.querySelectorAll('.mode-switch-opt').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      if (btn.classList.contains('active') || wrap.dataset.busy) return;
+      wrap.dataset.busy = '1';
+      wrap.querySelectorAll('.mode-switch-opt').forEach(function(b) { b.disabled = true; });
+      showLoader(btn.dataset.type);
+      fetch('switch_account_type.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'switch_account_type=' + encodeURIComponent(btn.dataset.type)
+      })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.success) { window.location.reload(); }
+          else {
+            hideLoader();
+            wrap.querySelectorAll('.mode-switch-opt').forEach(function(b) { b.disabled = false; });
+            delete wrap.dataset.busy;
+          }
+        })
+        .catch(function() {
+          hideLoader();
+          wrap.querySelectorAll('.mode-switch-opt').forEach(function(b) { b.disabled = false; });
+          delete wrap.dataset.busy;
+        });
+    });
+  });
+})();
+
 // ── Preloader ──
 window.addEventListener('load', () => {
-  setTimeout(() => document.getElementById('preloader').classList.add('gone'), 1600);
+  setTimeout(() => {
+    var p = document.getElementById('preloader');
+    if (p) p.classList.add('gone');
+  }, 1600);
 });
+
+// ── Location notice (single notice + modal) ──
+(function() {
+  var ids = <?= !empty($eventsNoLocation) ? json_encode(array_column($eventsNoLocation, 'id')) : '[]' ?>;
+  if (!ids.length) return;
+  var key = 'locNotice_' + ids.slice().sort().join('_');
+  if (localStorage.getItem(key) === '1') {
+    var el = document.getElementById('locNoticeSingle');
+    if (el) el.remove();
+  }
+  window._locNoticeKey = key;
+})();
+function dismissLocAll() {
+  if (window._locNoticeKey) localStorage.setItem(window._locNoticeKey, '1');
+  var el = document.getElementById('locNoticeSingle');
+  if (el) el.remove();
+}
+
+// ── Share-to-boost-sales notice (single notice + modal) ──
+(function() {
+  var ids = <?= !empty($activeEventsForShare) ? json_encode(array_column($activeEventsForShare, 'id')) : '[]' ?>;
+  if (!ids.length) return;
+  var key = 'shareNotice_' + ids.slice().sort().join('_');
+  if (localStorage.getItem(key) === '1') {
+    var el = document.getElementById('shareNoticeSingle');
+    if (el) el.remove();
+  }
+  window._shareNoticeKey = key;
+})();
+function dismissShareAll() {
+  if (window._shareNoticeKey) localStorage.setItem(window._shareNoticeKey, '1');
+  var el = document.getElementById('shareNoticeSingle');
+  if (el) el.remove();
+}
+var kcShareUrl = '';
+function openShareModal(btn) {
+  var title  = btn.dataset.title  || '';
+  var desc   = btn.dataset.desc   || '';
+  var banner = btn.dataset.banner || '';
+  var url    = btn.dataset.url    || '';
+  kcShareUrl = url;
+
+  document.getElementById('sharePrevTitle').textContent = title;
+  document.getElementById('sharePrevDesc').textContent  = desc;
+  var img = document.getElementById('sharePrevImg');
+  var ico = document.getElementById('sharePrevIco');
+  if (banner) { img.src = banner; img.style.display = ''; ico.style.display = 'none'; }
+  else { img.style.display = 'none'; ico.style.display = ''; }
+
+  var shareText = desc + '\n' + url;
+  document.getElementById('shareWaBtn').href = 'https://wa.me/?text=' + encodeURIComponent(shareText);
+  document.getElementById('shareFbBtn').href = 'https://www.facebook.com/sharer/sharer.php?u=' + encodeURIComponent(url);
+
+  var box = document.getElementById('shareLinkBox');
+  box.textContent = ''; box.classList.remove('visible');
+
+  document.getElementById('shareOverlay').classList.add('active');
+}
+function closeShareModal() {
+  document.getElementById('shareOverlay').classList.remove('active');
+}
+function copyShareLink() {
+  var box = document.getElementById('shareLinkBox');
+  box.textContent = kcShareUrl;
+  box.classList.add('visible');
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(kcShareUrl).then(function () {
+      if (window.toastr) toastr.success('Link copied to clipboard!', '', { timeOut: 2500 });
+    }).catch(function () {});
+  } else {
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = kcShareUrl; ta.setAttribute('readonly', '');
+      ta.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0;';
+      document.body.appendChild(ta);
+      ta.focus(); ta.select(); ta.setSelectionRange(0, ta.value.length);
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    } catch (err) {}
+  }
+}
+(function() {
+  var ov = document.getElementById('shareOverlay');
+  if (ov) ov.addEventListener('click', function (e) { if (e.target === this) closeShareModal(); });
+})();
+function openLocModal() {
+  var m = document.getElementById('locModal');
+  if (m) { m.style.display = 'flex'; document.body.style.overflow = 'hidden'; }
+}
+function closeLocModal() {
+  var m = document.getElementById('locModal');
+  if (m) { m.style.display = 'none'; document.body.style.overflow = ''; }
+}
 
 // ── Live clock ──
 function tick() {
@@ -1449,20 +2004,13 @@ function tick() {
 }
 setInterval(tick, 1000);
 
-// ── Tab switcher ──
-function switchTab(id, btn) {
-  document.querySelectorAll('.notif-panel').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.ntab').forEach(b => b.classList.remove('active'));
-  document.getElementById('tab-' + id).classList.add('active');
-  btn.classList.add('active');
-}
-
 // ── Charts ──
 Chart.defaults.font.family = "'Glacial Indifference', 'Trebuchet MS', sans-serif";
 Chart.defaults.color = '#6b7a99';
 const gridColor = 'rgba(5,46,100,0.05)';
 
 // Ticket chart
+if (document.getElementById('ticketChart')) {
 new Chart(document.getElementById('ticketChart'), {
   data: {
     labels: <?= json_encode($ticket_labels) ?>,
@@ -1519,8 +2067,10 @@ new Chart(document.getElementById('ticketChart'), {
     }
   }
 });
+}
 
 // Support chart
+if (document.getElementById('supportChart')) {
 new Chart(document.getElementById('supportChart'), {
   type: 'line',
   data: {
@@ -1563,6 +2113,39 @@ new Chart(document.getElementById('supportChart'), {
     }
   }
 });
+}
+
+// Donation status pie chart (fundraiser dashboard)
+if (document.getElementById('donationStatusChart')) {
+  new Chart(document.getElementById('donationStatusChart'), {
+    type: 'doughnut',
+    data: {
+      labels: ['Completed', 'Pending', 'Failed'],
+      datasets: [{
+        data: <?= json_encode(array_values($donationStatusBreakdown)) ?>,
+        backgroundColor: ['#00b37e', '#f59e0b', '#bf1339'],
+        borderColor: '#fff',
+        borderWidth: 3,
+        hoverOffset: 6
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      cutout: '68%',
+      plugins: { legend: { display: false }, tooltip: { padding: 10, cornerRadius: 8 } }
+    }
+  });
+}
+
+function kcToggleFin(btn) {
+  var wrap = btn.closest('.fin-wrap');
+  if (!wrap) return;
+  wrap.classList.toggle('fin-hidden');
+  var icon = btn.querySelector('i');
+  icon.classList.toggle('fa-eye');
+  icon.classList.toggle('fa-eye-slash');
+}
 </script>
 </body>
 </html>

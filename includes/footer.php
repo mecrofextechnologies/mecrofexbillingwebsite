@@ -1,5 +1,6 @@
+<?php include_once __DIR__ . '/site_config.php'; ?>
 <!-- ══════════════════════════════════════════════════
-     KEYCHELE ENHANCED FOOTER — footer.php
+     MAIN FOOTER — footer.php
 ══════════════════════════════════════════════════ -->
 
 <!-- Bootstrap Icons -->
@@ -7,16 +8,18 @@
 
 <style>
 :root {
-    --kc-red:    #b81236;
-    --kc-red-d:  #96102d;
-    --kc-gold:   #fdbd10;
-    --kc-navy:   #052e64;
-    --kc-navy-d: #021e44;
+    --bl-primary:   #0284c7;
+    --bl-primary-d: #0369a1;
+    --bl-accent:    #38bdf8;
+    --bl-tint:      #e0f2fe;
+    --bl-tint-2:    #f0f9ff;
+    --bl-deep:      #0c4a6e;   /* footer background */
+    --bl-deep-d:    #082f49;   /* bottom bar */
 }
 
 /* ── FOOTER SHELL ── */
 .kc-footer {
-    background: var(--kc-navy);
+    background: var(--bl-deep);
     color: #fff;
     padding: 64px 0 0;
     font-family: 'Montserrat', system-ui, sans-serif;
@@ -44,7 +47,7 @@
     position: absolute;
     bottom: 0; left: 0;
     width: 36px; height: 3px;
-    background: var(--kc-gold);
+    background: var(--bl-accent);
     border-radius: 2px;
 }
 
@@ -58,14 +61,15 @@
 .kc-footer-logo {
     width: 46px; height: 46px;
     border-radius: 10px;
-    background: var(--kc-red);
+    background: linear-gradient(135deg, var(--bl-accent), var(--bl-primary));
     display: flex; align-items: center; justify-content: center;
-    font-size: 22px; font-weight: 900; color: var(--kc-gold);
+    font-size: 22px; font-weight: 900; color: #fff;
     flex-shrink: 0;
 }
 .kc-footer-logo img {
     width: 100%; height: 100%;
     object-fit: contain; border-radius: 10px;
+    background: #fff;   /* logo is a white-background JPEG */
 }
 .kc-footer-brand-name {
     font-size: 22px; font-weight: 900;
@@ -113,11 +117,11 @@
     transition: all .25s;
 }
 .kc-soc:hover {
-    background: var(--kc-gold);
-    border-color: var(--kc-gold);
-    color: var(--kc-navy);
+    background: var(--bl-accent);
+    border-color: var(--bl-accent);
+    color: var(--bl-deep-d);
     transform: translateY(-3px);
-    box-shadow: 0 6px 18px rgba(253,189,16,.25);
+    box-shadow: 0 6px 18px rgba(56,189,248,.25);
 }
 
 /* ── CONTACT ROWS ── */
@@ -128,10 +132,10 @@
 .kc-contact-icon {
     width: 38px; height: 38px;
     border-radius: 10px;
-    background: rgba(253,189,16,.1);
-    border: 1px solid rgba(253,189,16,.2);
+    background: rgba(56,189,248,.1);
+    border: 1px solid rgba(56,189,248,.22);
     display: flex; align-items: center; justify-content: center;
-    font-size: 16px; color: var(--kc-gold);
+    font-size: 16px; color: var(--bl-accent);
     flex-shrink: 0;
 }
 .kc-contact-label {
@@ -146,7 +150,7 @@
     color: rgba(255,255,255,.82);
     text-decoration: none; transition: color .2s;
 }
-.kc-contact-val a:hover { color: var(--kc-gold); }
+.kc-contact-val a:hover { color: var(--bl-accent); }
 
 /* ── QUICK LINKS ── */
 .kc-links-list {
@@ -163,63 +167,39 @@
 }
 .kc-links-list li a::before {
     content: '›';
-    color: var(--kc-gold);
+    color: var(--bl-accent);
     font-size: 17px; line-height: 1;
     transition: transform .2s;
 }
 .kc-links-list li a:hover {
-    color: var(--kc-gold);
+    color: var(--bl-accent);
     padding-left: 6px;
 }
 
-/* ── NEWSLETTER ── */
-.kc-news-desc {
+/* ── GET STARTED (col 4) ── */
+.kc-start-desc {
     font-size: 13.5px;
     color: rgba(255,255,255,.58);
     line-height: 1.75; margin-bottom: 18px;
 }
-.kc-news-form {
-    display: flex; flex-direction: column; gap: 10px;
-}
-.kc-news-input {
-    width: 100%;
-    padding: 11px 16px;
-    border-radius: 10px;
-    border: 1.5px solid rgba(255,255,255,.13);
-    background: rgba(255,255,255,.06);
-    color: #fff;
-    font-size: 13.5px;
-    outline: none;
-    transition: border-color .2s, background .2s;
-}
-.kc-news-input::placeholder { color: rgba(255,255,255,.28); }
-.kc-news-input:focus {
-    border-color: var(--kc-gold);
-    background: rgba(255,255,255,.09);
-}
-.kc-news-btn {
-    width: 100%;
+.kc-start-btns { display: flex; flex-direction: column; gap: 10px; }
+.kc-start-btn {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
     padding: 12px 16px;
     border-radius: 10px;
-    background: var(--kc-red);
-    color: #fff;
-    border: none;
     font-size: 13.5px; font-weight: 700;
-    cursor: pointer;
-    display: flex; align-items: center; justify-content: center; gap: 8px;
+    text-decoration: none;
     transition: all .2s;
 }
-.kc-news-btn:hover {
-    background: var(--kc-gold);
-    color: #000;
+.kc-start-btn.is-main { background: var(--bl-primary); color: #fff; }
+.kc-start-btn.is-main:hover {
+    background: var(--bl-accent);
+    color: var(--bl-deep-d);
     transform: translateY(-1px);
-    box-shadow: 0 6px 18px rgba(184,18,54,.28);
+    box-shadow: 0 6px 18px rgba(2,132,199,.35);
 }
-.kc-news-note {
-    font-size: 11.5px;
-    color: rgba(255,255,255,.28);
-    text-align: center; margin: 0;
-}
+.kc-start-btn.is-wa { border: 1.5px solid rgba(74,222,128,.45); color: #86efac; }
+.kc-start-btn.is-wa:hover { background: rgba(74,222,128,.12); color: #bbf7d0; }
 
 /* ── DIVIDER ── */
 .kc-footer-divider {
@@ -230,7 +210,7 @@
 
 /* ── BOTTOM BAR ── */
 .kc-footer-bottom {
-    background: var(--kc-navy-d);
+    background: var(--bl-deep-d);
     padding: 20px 0;
     margin-top: 0;
 }
@@ -247,7 +227,7 @@
     margin: 0;
 }
 .kc-footer-bottom a {
-    color: var(--kc-gold);
+    color: var(--bl-accent);
     text-decoration: none;
     font-weight: 700;
     transition: opacity .2s;
@@ -263,7 +243,7 @@
     font-weight: 600;
     transition: color .2s;
 }
-.kc-bottom-links a:hover { color: var(--kc-gold); }
+.kc-bottom-links a:hover { color: var(--bl-accent); }
 
 /* ── RESPONSIVE ── */
 @media (max-width: 1024px) {
@@ -296,34 +276,26 @@
     <div>
         <div class="kc-footer-brand-wrap">
             <div class="kc-footer-logo">
-                <img src="images/logo/KECHELE LOGO.png"
-                     alt="Keychele"
-                     onerror="this.style.display='none';this.parentElement.textContent='K'">
+                <img src="<?= htmlspecialchars($siteLogo) ?>"
+                     alt="<?= htmlspecialchars($siteName) ?>"
+                     onerror="this.style.display='none';this.parentElement.textContent='<?= htmlspecialchars(strtoupper(substr($siteName, 0, 1))) ?>'">
             </div>
-            <span class="kc-footer-brand-name">Keychele</span>
+            <span class="kc-footer-brand-name"><?= htmlspecialchars($siteName) ?></span>
         </div>
         <p class="kc-footer-about">
-            We built Keychele to empower creators with the right tools to monetize their
-            crafts and create exceptional social experiences across Kenya.
+            <?= htmlspecialchars($siteTagline) ?>. Automate customer billing, M-Pesa payments,
+            hotspot vouchers and PPPoE accounts from one dashboard.
         </p>
-        <div class="kc-footer-live">Platform Live</div>
+        <div class="kc-footer-live">All Systems Operational</div>
+        <?php $footerSocials = array_filter($siteSocials ?? []); if ($footerSocials): ?>
         <div class="kc-socials">
-            <a href="https://facebook.com/keychele" class="kc-soc" target="_blank" rel="noopener" aria-label="Facebook">
-                <i class="bi bi-facebook"></i>
+            <?php foreach ($footerSocials as $icon => $url): ?>
+            <a href="<?= htmlspecialchars($url) ?>" class="kc-soc" target="_blank" rel="noopener" aria-label="<?= htmlspecialchars($icon) ?>">
+                <i class="bi bi-<?= htmlspecialchars($icon) ?>"></i>
             </a>
-            <a href="https://twitter.com/keychele" class="kc-soc" target="_blank" rel="noopener" aria-label="Twitter / X">
-                <i class="bi bi-twitter-x"></i>
-            </a>
-            <a href="https://instagram.com/keycheleke" class="kc-soc" target="_blank" rel="noopener" aria-label="Instagram">
-                <i class="bi bi-instagram"></i>
-            </a>
-            <a href="https://tiktok.com/@keychele" class="kc-soc" target="_blank" rel="noopener" aria-label="TikTok">
-                <i class="bi bi-tiktok"></i>
-            </a>
-            <a href="https://youtube.com/@keychele" class="kc-soc" target="_blank" rel="noopener" aria-label="YouTube">
-                <i class="bi bi-youtube"></i>
-            </a>
+            <?php endforeach; ?>
         </div>
+        <?php endif; ?>
     </div>
 
     <!-- ── Col 2: Contact ── -->
@@ -343,7 +315,7 @@
             <div>
                 <div class="kc-contact-label">Phone</div>
                 <div class="kc-contact-val">
-                    <a href="tel:+254112680521">+254 112 680 521</a>
+                    <a href="tel:<?= htmlspecialchars($sitePhoneTel) ?>"><?= htmlspecialchars($sitePhone) ?></a>
                 </div>
             </div>
         </div>
@@ -353,7 +325,7 @@
             <div>
                 <div class="kc-contact-label">Email</div>
                 <div class="kc-contact-val">
-                    <a href="mailto:info@keychele.co.ke">info@keychele.co.ke</a>
+                    <a href="mailto:<?= htmlspecialchars($siteEmail) ?>"><?= htmlspecialchars($siteEmail) ?></a>
                 </div>
             </div>
         </div>
@@ -362,7 +334,7 @@
             <div class="kc-contact-icon"><i class="bi bi-clock"></i></div>
             <div>
                 <div class="kc-contact-label">Hours</div>
-                <div class="kc-contact-val">Mon–Fri, 10:00–19:00</div>
+                <div class="kc-contact-val"><?= htmlspecialchars($siteHours) ?></div>
             </div>
         </div>
     </div>
@@ -371,34 +343,27 @@
     <div>
         <h5 class="kc-footer-heading">Quick Links</h5>
         <ul class="kc-links-list">
-            <li><a href="/index">Home</a></li>
-            <li><a href="/about">About Us</a></li>
-            <li><a href="/creators">Creators</a></li>
-            <li><a href="/events">Events</a></li>
-            <li><a href="/contact">Contact</a></li>
-            <li><a href="/register">Become a Creator</a></li>
-            <li><a href="/privacy">Privacy Policy</a></li>
-            <li><a href="/terms">Terms of Service</a></li>
+            <li><a href="<?= mb_section_url('home') ?>">Home</a></li>
+            <li><a href="<?= mb_section_url('features') ?>">Features</a></li>
+            <li><a href="<?= mb_section_url('pricing') ?>">Pricing</a></li>
+            <li><a href="<?= mb_section_url('about') ?>">About Us</a></li>
+            <li><a href="<?= mb_section_url('contact') ?>">Contact</a></li>
+            <li><a href="<?= mb_section_url('demo') ?>">Book a Demo</a></li>
+            <li><a href="<?= htmlspecialchars($appLoginUrl) ?>">Client Login</a></li>
         </ul>
     </div>
 
-    <!-- ── Col 4: Newsletter ── -->
+    <!-- ── Col 4: Get started ── -->
     <div>
-        <h5 class="kc-footer-heading">Newsletter</h5>
-        <p class="kc-news-desc">
-            Get the latest events, creator highlights and platform updates delivered to your inbox.
+        <h5 class="kc-footer-heading">Get Started</h5>
+        <p class="kc-start-desc">
+            See how <?= htmlspecialchars($siteName) ?> can automate billing for your hotspot and PPPoE customers.
         </p>
-        <form class="kc-news-form" action="/newsletter/subscribe" method="POST">
-            <?php if(function_exists('csrf_field')) echo csrf_field(); ?>
-            <input class="kc-news-input" type="text"   name="name"  placeholder="Your full name"     required>
-            <input class="kc-news-input" type="email"  name="email" placeholder="Your email address" required>
-            <button type="submit" class="kc-news-btn">
-                <i class="bi bi-send"></i> Subscribe Now
-            </button>
-            <p class="kc-news-note">No spam. Unsubscribe anytime.</p>
-        </form>
+        <div class="kc-start-btns">
+            <a class="kc-start-btn is-main" href="<?= mb_section_url('demo') ?>"><i class="bi bi-calendar-check"></i> Book a Demo</a>
+            <a class="kc-start-btn is-wa" href="https://wa.me/<?= preg_replace('/\D/', '', $sitePhoneTel) ?>" target="_blank" rel="noopener"><i class="bi bi-whatsapp"></i> Chat on WhatsApp</a>
+        </div>
     </div>
-
 </div><!-- /kc-footer-grid -->
 
 <hr class="kc-footer-divider">
@@ -410,19 +375,18 @@
 <div class="container">
 <div class="kc-footer-bottom-inner">
 
-    <p>&copy; <?php echo date('Y'); ?> Keychele. All Rights Reserved.</p>
+    <p>&copy; <?php echo date('Y'); ?> <?= htmlspecialchars($siteName) ?>. All Rights Reserved.</p>
 
     <div class="kc-bottom-links">
-        <a href="/privacy">Privacy</a>
-        <a href="/terms">Terms</a>
-        <a href="/contact">Support</a>
+        <a href="<?= mb_section_url('contact') ?>">Support</a>
     </div>
 
-    <p>
-        Designed &amp; developed by
-        <a href="#" id="mecrofex-link">Mecrofex Technologies</a>
-    </p>
-
+    <!--
+<p>
+    Designed &amp; developed by
+    <a href="#" id="mecrofex-link">Mecrofex Technologies</a>
+</p>
+-->
 </div>
 </div>
 </div>
@@ -455,8 +419,8 @@
     inset: 0; background: rgba(0,0,0,.72);
 }
 .mecrofex-modal-content {
-    background: var(--kc-navy, #052e64);
-    border: 1.5px solid var(--kc-gold, #fdbd10);
+    background: var(--bl-deep, #0c4a6e);
+    border: 1.5px solid var(--bl-accent, #38bdf8);
     border-radius: 16px;
     margin: 14% auto;
     padding: 32px 28px;
@@ -467,7 +431,7 @@
 }
 .mecrofex-close {
     position: absolute; top: 12px; right: 18px;
-    color: var(--kc-gold, #fdbd10);
+    color: var(--bl-accent, #38bdf8);
     font-size: 28px; font-weight: 700; cursor: pointer;
     line-height: 1; transition: color .2s;
 }
@@ -479,8 +443,8 @@
     text-decoration: none; transition: all .25s;
     display: flex; align-items: center; justify-content: center;
 }
-.mecrofex-website-btn  { background: var(--kc-gold, #fdbd10); color: #032d5d; }
-.mecrofex-website-btn:hover  { background: #fff; color: #032d5d; }
+.mecrofex-website-btn  { background: var(--bl-accent, #38bdf8); color: #082f49; }
+.mecrofex-website-btn:hover  { background: #fff; color: #082f49; }
 .mecrofex-whatsapp-btn { background: #25D366; color: #fff; }
 .mecrofex-whatsapp-btn:hover { background: #128C7E; }
 </style>

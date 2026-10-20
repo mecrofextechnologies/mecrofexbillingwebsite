@@ -1,196 +1,54 @@
 <?php
 /* ════════════════════════════════════════════════════════════
-   KEYCHELE HOME PAGE — index.php
-   Requires: css/keychele-home.css
+   MECROFEX BILLING — home page (index.php)
+   Static page: no database. Shared settings live in includes/site_config.php.
 ════════════════════════════════════════════════════════════════ */
-include 'msanii/includes/connect.php';
-include_once 'includes/track_visit.php';
-include_once 'includes/mecroguard.php';
-
 date_default_timezone_set('Africa/Nairobi');
 
-// ── Hero Slides ──────────────────────────────────────────────
-$slides = [];
-try {
-    $slides = $pdo->query("SELECT * FROM sliders ORDER BY id DESC")
-                  ->fetchAll(PDO::FETCH_ASSOC);
-} catch (Exception $e) { $slides = []; }
+// ── Hero slider content ──────────────────────────────────────
+// 'title' is trusted HTML (<em> gets the sky-blue gradient); every other
+// field is escaped on output.
+include_once __DIR__ . '/includes/site_config.php';
+$heroChips = [
+    ['fa-circle-check', true,  'Payment received', 'KES 1,500 · M-Pesa'],
+    ['fa-wifi',         false, 'Auto-reconnected', 'Customer back online'],
+];
+$heroSlides = [
+    [
+        'image'   => 'images/slide/jason-goodman-0K7GgiA8lVE-unsplash.jpg',
+        'eyebrow' => 'ISP & Hotspot Billing',
+        'title'   => 'Billing that <em>runs itself</em>',
+        'sub'     => 'Automate PPPoE and hotspot billing, collect payments by M-Pesa, and disconnect or reconnect customers automatically.',
+        'btn1'    => ['Book a Demo', '#demo'],
+        'btn2'    => ['See Pricing', '#pricing'],
+        'chips'   => $heroChips,
+    ],
+    [
+        'image'   => 'images/slide/christina-wocintechchat-com-NDoVgcS_lZM-unsplash.jpg',
+        'eyebrow' => 'Hotspot Vouchers',
+        'title'   => 'Sell Wi-Fi access <em>while you sleep</em>',
+        'sub'     => 'Customers pick a package, pay with M-Pesa and get online instantly. No vouchers to print, no cash to chase.',
+        'btn1'    => ['Explore Features', '#features'],
+        'btn2'    => ['Book a Demo', '#demo'],
+        'chips'   => [
+            ['fa-ticket', true,  'Voucher issued', '1 Day · Unlimited'],
+            ['fa-users',  false, 'Users online',   'Live from your routers'],
+        ],
+    ],
+    [
+        'image'   => 'images/slide/jason-goodman-0K7GgiA8lVE-unsplash.jpg',
+        'eyebrow' => 'MikroTik Integration',
+        'title'   => 'Every router, <em>one dashboard</em>',
+        'sub'     => 'Connect your MikroTik routers, set packages and speeds, and track usage and revenue in real time.',
+        'btn1'    => ['Book a Demo', '#demo'],
+        'btn2'    => ['Client Login', $appLoginUrl],
+        'chips'   => [
+            ['fa-server',     true,  'Router synced', 'MikroTik · online'],
+            ['fa-chart-line', false, 'Revenue today', 'Updated in real time'],
+        ],
+    ],
+];
 
-// ── ALL Events — RANDOM ORDER (reshuffles on every reload) ────
-$allEvents = [];
-try {
-    $stmt = $pdo->prepare("
-        SELECT t.id, t.title, t.venue, t.start_date, t.start_time,
-               t.banner, t.creator_id, t.show_views,
-               COALESCE(tpv.total_views, 0) AS views,
-               c.username, mp.profile_pic,
-               MIN(ett.price)  AS min_price,
-               COUNT(ett.id)   AS ticket_count,
-               CASE
-                 WHEN (t.start_date > CURDATE()
-                   OR (t.start_date = CURDATE() AND t.start_time > CURTIME()))
-                 THEN 'upcoming' ELSE 'past'
-               END AS ev_type
-        FROM tickets t
-        LEFT JOIN creators c             ON t.creator_id = c.id
-        LEFT JOIN my_page mp             ON c.id = mp.creator_id
-        LEFT JOIN event_ticket_types ett ON t.id = ett.event_id
-        LEFT JOIN total_ticketpageviews tpv ON tpv.ticket_id = t.id
-        WHERE t.creator_id IS NOT NULL
-          AND (t.visibility = 'public' OR t.visibility IS NULL)
-        GROUP BY t.id
-        ORDER BY RAND()
-        LIMIT 100
-    ");
-    $stmt->execute();
-    $allEvents = $stmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (Exception $e) { $allEvents = []; }
-
-// ── Event months — dedicated DB query, only months that have events ──
-$eventMonths = [];
-try {
-    $rows = $pdo->query("
-        SELECT DISTINCT DATE_FORMAT(start_date, '%Y-%m') AS mk,
-                        DATE_FORMAT(start_date, '%b %Y')  AS ml
-        FROM tickets
-        WHERE creator_id IS NOT NULL
-          AND start_date IS NOT NULL
-          AND (visibility = 'public' OR visibility IS NULL)
-        ORDER BY mk DESC
-    ")->fetchAll(PDO::FETCH_ASSOC);
-    foreach ($rows as $r) $eventMonths[$r['mk']] = $r['ml'];
-} catch (Exception $e) { $eventMonths = []; }
-
-// ── Past Events only ──────────────────────────────────────────
-$pastEvents = [];
-try {
-    $stmt = $pdo->prepare("
-        SELECT t.id, t.title, t.venue, t.start_date, t.start_time,
-               t.banner, t.creator_id, t.show_views,
-               COALESCE(tpv.total_views, 0) AS views,
-               c.username, mp.profile_pic,
-               MIN(ett.price) AS min_price, COUNT(ett.id) AS ticket_count
-        FROM tickets t
-        LEFT JOIN creators c             ON t.creator_id = c.id
-        LEFT JOIN my_page mp             ON c.id = mp.creator_id
-        LEFT JOIN event_ticket_types ett ON t.id = ett.event_id
-        LEFT JOIN total_ticketpageviews tpv ON tpv.ticket_id = t.id
-        WHERE (t.start_date < CURDATE()
-           OR (t.start_date = CURDATE() AND t.start_time <= CURTIME()))
-          AND t.creator_id IS NOT NULL
-          AND (t.visibility = 'public' OR t.visibility IS NULL)
-        GROUP BY t.id
-        ORDER BY t.start_date DESC, t.start_time DESC
-        LIMIT 100
-    ");
-    $stmt->execute();
-    $pastEvents = $stmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (Exception $e) { $pastEvents = []; }
-
-// ── Past-event months — only months that have past events ────
-$pastEventMonths = [];
-try {
-    $rows = $pdo->query("
-        SELECT DISTINCT DATE_FORMAT(start_date, '%Y-%m') AS mk,
-                        DATE_FORMAT(start_date, '%b %Y')  AS ml
-        FROM tickets
-        WHERE creator_id IS NOT NULL
-          AND start_date IS NOT NULL
-          AND (start_date < CURDATE()
-               OR (start_date = CURDATE() AND start_time <= CURTIME()))
-          AND (visibility = 'public' OR visibility IS NULL)
-        ORDER BY mk DESC
-    ")->fetchAll(PDO::FETCH_ASSOC);
-    foreach ($rows as $r) $pastEventMonths[$r['mk']] = $r['ml'];
-} catch (Exception $e) { $pastEventMonths = []; }
-
-// ── Creators ─────────────────────────────────────────────────
-$creators = [];
-try {
-    $creators = $pdo->query("
-        SELECT mp.*,
-               c.username,
-               COALESCE(NULLIF(TRIM(c.full_name),''),'Creator') AS full_name,
-               COUNT(DISTINCT t.id)  AS event_count,
-               COUNT(DISTINCT tp.id) AS ticket_count
-        FROM my_page mp
-        JOIN creators c ON mp.creator_id = c.id
-        LEFT JOIN tickets t  ON t.creator_id = c.id
-        LEFT JOIN ticket_purchases tp
-               ON tp.ticket_id = t.id AND tp.status = 'completed'
-        GROUP BY mp.id, c.username, c.full_name
-        ORDER BY mp.created_at DESC
-        LIMIT 80
-    ")->fetchAll(PDO::FETCH_ASSOC);
-} catch (Exception $e) { $creators = []; }
-
-// ── Music Tracks ──────────────────────────────────────────────
-$musicTracks = [];
-try {
-    $stmt = $pdo->prepare("
-        SELECT m.id, m.title, m.artist, m.album, m.genre, m.description,
-               m.audio_file, m.cover_art, m.is_free, m.price,
-               m.release_date, m.play_count, m.download_count,
-               COALESCE(mp.full_name, c.username) AS creator_name,
-               mp.profile_pic AS creator_pic
-        FROM music m
-        LEFT JOIN creators c ON c.id = m.creator_id
-        LEFT JOIN my_page mp ON mp.creator_id = m.creator_id
-        WHERE m.status = 'published' AND m.visibility = 'public'
-        ORDER BY m.play_count DESC, m.created_at DESC
-        LIMIT 80
-    ");
-    $stmt->execute();
-    $musicTracks = $stmt->fetchAll(PDO::FETCH_ASSOC);
-} catch (Exception $e) { $musicTracks = []; }
-
-// ── Platform Stats ────────────────────────────────────────────
-$totalCreators = (int)$pdo->query("SELECT COUNT(*) FROM my_page mp JOIN creators c ON mp.creator_id=c.id")->fetchColumn();
-$totalEvents   = (int)$pdo->query("SELECT COUNT(*) FROM tickets")->fetchColumn();
-$totalTickets  = (int)$pdo->query("SELECT COUNT(*) FROM ticket_purchases WHERE status='completed'")->fetchColumn();
-
-// Total views: sum the `views` column from the tickets table
-try {
-    $totalViews = (int)$pdo->query("SELECT COALESCE(SUM(views), 0) FROM tickets")->fetchColumn();
-} catch (Exception $e) {
-    try {
-        $totalViews = (int)$pdo->query("SELECT COUNT(*) FROM ticket_page_visits")->fetchColumn();
-    } catch (Exception $e2) { $totalViews = 0; }
-}
-
-// ── Helpers ───────────────────────────────────────────────────
-include_once __DIR__ . '/includes/creator_ticket_settings.php';
-
-function daysUntil($d) {
-    $t    = new DateTime('today');
-    $e    = new DateTime($d);
-    $diff = $t->diff($e);
-    return $diff->invert ? -$diff->days : $diff->days;
-}
-
-function fmtViews(int $n): string {
-    if ($n >= 1000000) return round($n / 1000000, 1) . 'M';
-    if ($n >= 1000)    return round($n / 1000, 1) . 'K';
-    return (string)$n;
-}
-
-function getGenreIcon(string $genre): string {
-    $map = [
-        'afrobeats'   => 'fa-drum',
-        'bongo flava' => 'fa-drum',
-        'gengetone'   => 'fa-drum',
-        'amapiano'    => 'fa-drum',
-        'gospel'      => 'fa-church',
-        'hip-hop'     => 'fa-microphone-lines',
-        'drill'       => 'fa-microphone-lines',
-        'r&b'         => 'fa-heart',
-        'reggae'      => 'fa-peace',
-        'jazz'        => 'fa-violin',
-        'classical'   => 'fa-violin',
-        'electronic'  => 'fa-wave-square',
-    ];
-    return $map[strtolower(trim($genre))] ?? 'fa-music';
-}
 ?>
 <!doctype html>
 <html lang="en">
@@ -198,22 +56,19 @@ function getGenreIcon(string $genre): string {
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
 
-    <title>Keychele — Ticketing, Fundraising &amp; Creator Platform in Kenya</title>
-    <meta name="description" content="Sell event tickets, receive fan donations, fundraise, host trivia &amp; sell digital products — all in one M-Pesa ready platform.">
-    <meta name="keywords" content="event ticketing Kenya, sell tickets online, online fundraising Kenya, creator donations, M-Pesa ticketing, creator platform Africa">
-    <meta name="author" content="Keychele Team">
+    <title><?= htmlspecialchars($siteName) ?> — ISP &amp; Hotspot Billing with M-Pesa in Kenya</title>
+    <meta name="description" content="Billing for internet providers: hotspot vouchers, PPPoE, automatic M-Pesa payments, auto reconnection and MikroTik integration. From KES 500 a month.">
+    <meta name="keywords" content="ISP billing Kenya, hotspot billing, PPPoE billing, MikroTik billing, M-Pesa billing system, hotspot vouchers">
+    <meta name="author" content="Mecrofex Technologies">
     <meta name="robots" content="index, follow">
 
-    <meta property="og:title" content="Keychele – Ticketing, Fundraising &amp; Fan Support for Creators in Kenya">
-    <meta property="og:description" content="Sell tickets, run fundraisers, host competitions — M-Pesa integrated. The creator's platform.">
+    <meta property="og:title" content="<?= htmlspecialchars($siteName) ?> — ISP &amp; Hotspot Billing with M-Pesa">
+    <meta property="og:description" content="Hotspot vouchers, PPPoE, automatic M-Pesa payments and MikroTik integration in one dashboard.">
     <meta property="og:type" content="website">
-    <meta property="og:url" content="https://keychele.co.ke">
-    <meta property="og:image" content="https://keychele.co.ke/og-image.jpg">
-    <meta property="og:site_name" content="Keychele">
-
-    <meta name="twitter:card" content="summary_large_image">
-    <meta name="twitter:title" content="Keychele – Kenya's Creator Platform">
-    <meta name="twitter:image" content="https://keychele.co.ke/twitter-image.jpg">
+    <meta property="og:image" content="<?= htmlspecialchars($siteLogo) ?>">
+    <meta property="og:site_name" content="<?= htmlspecialchars($siteName) ?>">
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="<?= htmlspecialchars($siteName) ?> — ISP &amp; Hotspot Billing">
 
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -226,1484 +81,1996 @@ function getGenreIcon(string $genre): string {
 
     <!-- Core CSS -->
     <link href="css/bootstrap.min.css" rel="stylesheet">
-    <link href="css/magnific-popup.css" rel="stylesheet">
     <link href="css/tooplate-waso-strategy.css" rel="stylesheet">
 
-    <!-- Home Page Styles -->
-    <link href="css/keychele-home.css" rel="stylesheet">
-
-    <link rel="icon" href="/favicon.ico" type="image/x-icon">
+    <link rel="icon" href="<?= htmlspecialchars($siteLogo) ?>">
 
     <script type="application/ld+json">
-    {
-      "@context": "https://schema.org",
-      "@type": "Organization",
-      "name": "Keychele",
-      "url": "https://keychele.co.ke",
-      "logo": "https://keychele.co.ke/logo.png",
-      "description": "Kenya's all-in-one platform for event ticketing, fundraising, creator support and competitions.",
-      "address": { "@type": "PostalAddress", "addressLocality": "Nairobi", "addressCountry": "KE" },
-      "email": "info@keychele.co.ke",
-      "telephone": "+254112680521"
-    }
+    <?= json_encode([
+        '@context'    => 'https://schema.org',
+        '@type'       => 'Organization',
+        'name'        => $siteName,
+        'logo'        => $siteLogo,
+        'description' => 'Billing software for internet providers in Kenya: hotspot vouchers, PPPoE, M-Pesa payments and MikroTik integration.',
+        'address'     => ['@type' => 'PostalAddress', 'addressLocality' => 'Nairobi', 'addressCountry' => 'KE'],
+        'email'       => $siteEmail,
+        'telephone'   => $sitePhoneTel,
+    ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) ?>
+
     </script>
+    <script>document.documentElement.classList.add('mb-js');</script>
 </head>
 
 <style>
-    /* ═══════════════════════════════════════════════════════════════
-   KEYCHELE HOME PAGE STYLES — keychele-home.css
-   Brand: Red #bf1339 | Gold #fec411 | Navy #052e64
+/* ═══════════════════════════════════════════════════════════════
+   MECROFEX BILLING — home page styles
+   Colours: --bl-* tokens (defined in includes/nav.php) + per-section tokens
 ═══════════════════════════════════════════════════════════════ */
-
-/* ── BRAND TOKENS ── */
 :root {
-    --navy:    #052e64;
-    --navy-d:  #031e44;
-    --navy-m:  #0a4a99;
-    --navy-l:  #e8eef8;
-    --navy-xl: #f2f5fc;
-    --gold:    #fec411;
-    --gold-d:  #d9a70a;
-    --gold-l:  #fffbea;
-    --cr:      #bf1339;
-    --cr-d:    #96102d;
-    --cr-l:    #fce8ec;
-    --white:   #ffffff;
-    --g50:     #f8f9fd;
-    --g100:    #eef1f9;
-    --g200:    #dce2f0;
-    --g400:    #8a97b8;
-    --g600:    #4a5578;
-    --green:   #16a34a;
-    --fh:      'Montserrat', system-ui, sans-serif;
+    --fh: 'Montserrat', system-ui, sans-serif;   /* heading font */
 }
 
 /* ═══════════════════════════════════════════════════
-   1. HERO SECTION
+   1. HERO SLIDER — split layout, progress-bar autoplay
 ═══════════════════════════════════════════════════ */
-.kc-hero-section {
+.mb-hero {
+    --h-navy:   #071d3a;                        /* logo navy */
+    --h-navy-2: #0c3b6e;
+    --h-blue:   var(--bl-primary, #0284c7);
+    --h-sky:    var(--bl-accent, #38bdf8);
+    --h-ease:   cubic-bezier(.16,1,.3,1);
     position: relative;
     overflow: hidden;
-    height: 72vh;
+    color: #fff;
+    font-family: var(--fh);
+    padding: 64px 0 44px;
+    background:
+        radial-gradient(900px 520px at 88% 18%, rgba(56,189,248,.26), transparent 62%),
+        radial-gradient(700px 520px at 0% 100%, rgba(2,132,199,.34), transparent 60%),
+        linear-gradient(135deg, var(--h-navy) 0%, var(--h-navy-2) 100%);
 }
-.kc-hero-img {
-    width: 100%;
-    height: 72vh;
-    object-fit: cover;
-    display: block;
-}
-.kc-hero-overlay {
+/* faint grid, fading out from the image side */
+.mb-hero::before {
+    content: '';
     position: absolute;
     inset: 0;
-    background: linear-gradient(135deg, rgba(5,46,100,.65) 0%, rgba(191,19,57,.35) 100%);
-    z-index: 1;
+    background-image:
+        linear-gradient(rgba(255,255,255,.05) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.05) 1px, transparent 1px);
+    background-size: 44px 44px;
+    -webkit-mask-image: radial-gradient(ellipse at 70% 40%, #000 15%, transparent 72%);
+            mask-image: radial-gradient(ellipse at 70% 40%, #000 15%, transparent 72%);
     pointer-events: none;
 }
-.kc-hero-caption {
-    position: absolute;
-    inset: 0;
-    z-index: 2;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    text-align: center;
-    padding: 0 20px;
-}
-.kc-hero-eyebrow {
-    display: inline-flex;
-    align-items: center;
-    gap: 7px;
-    background: rgba(254,196,17,.18);
-    border: 1px solid rgba(254,196,17,.4);
-    color: var(--gold);
-    font-family: var(--fh);
-    font-size: 10px;
-    font-weight: 800;
-    letter-spacing: 3px;
-    text-transform: uppercase;
-    padding: 6px 18px;
-    border-radius: 30px;
-    margin-bottom: 16px;
-}
-.kc-hero-title {
-    font-family: var(--fh);
-    font-size: clamp(1.8rem, 4.5vw, 3.4rem);
-    font-weight: 900;
-    color: #fff;
-    line-height: 1.2;
-    margin-bottom: 16px;
-    text-shadow: 0 2px 20px rgba(0,0,0,.3);
-}
-.kc-hero-title span { color: var(--gold); }
-.kc-hero-sub {
-    font-size: clamp(13px, 1.6vw, 16px);
-    color: rgba(255,255,255,.82);
-    max-width: 560px;
-    line-height: 1.7;
-    margin-bottom: 28px;
-}
-.kc-hero-btns {
-    display: flex;
-    gap: 14px;
-    flex-wrap: wrap;
-    justify-content: center;
-}
-.kc-hero-btn-main {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 13px 32px;
-    background: var(--cr);
-    color: #fff;
-    border: none;
-    border-radius: 50px;
-    font-family: var(--fh);
-    font-size: 14px;
-    font-weight: 800;
-    text-decoration: none;
-    transition: all .2s;
-    box-shadow: 0 6px 20px rgba(191,19,57,.4);
-}
-.kc-hero-btn-main:hover {
-    background: var(--cr-d);
-    color: #fff;
-    transform: translateY(-2px);
-}
-.kc-hero-btn-out {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    padding: 13px 32px;
-    border: 2px solid rgba(255,255,255,.7);
-    color: #fff;
-    border-radius: 50px;
-    font-family: var(--fh);
-    font-size: 14px;
-    font-weight: 700;
-    text-decoration: none;
-    transition: all .2s;
-    background: rgba(255,255,255,.08);
-    backdrop-filter: blur(6px);
-}
-.kc-hero-btn-out:hover {
-    background: rgba(255,255,255,.2);
-    color: #fff;
-    border-color: #fff;
-}
+.mb-hero .container { position: relative; z-index: 1; }
 
-/* Carousel controls */
-.kc-hero-prev,
-.kc-hero-next {
-    position: absolute;
-    top: 50%;
-    transform: translateY(-50%);
-    width: 46px;
-    height: 46px;
-    border-radius: 50%;
-    background: rgba(0,0,0,.45);
-    border: none;
-    z-index: 5;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    transition: background .25s, transform .25s;
-}
-.kc-hero-prev:hover,
-.kc-hero-next:hover {
-    background: var(--cr);
-    transform: translateY(-50%) scale(1.1);
-}
-.kc-hero-prev { left: 18px; }
-.kc-hero-next { right: 18px; }
-.kc-hero-prev i,
-.kc-hero-next i { color: #fff; font-size: 1.1rem; }
-
-/* Carousel dots */
-.kc-hero-dots {
-    position: absolute;
-    bottom: 18px;
-    left: 50%;
-    transform: translateX(-50%);
-    display: flex;
-    gap: 8px;
-    z-index: 5;
-}
-.kc-hero-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: rgba(255,255,255,.4);
-    transition: all .25s;
-    cursor: pointer;
-}
-.kc-hero-dot.active {
-    background: var(--gold);
-    width: 24px;
-    border-radius: 4px;
-}
-
-@media (max-width: 991px) {
-    .kc-hero-section,
-    .kc-hero-img { height: 55vh; }
-}
-@media (max-width: 576px) {
-    .kc-hero-section,
-    .kc-hero-img { height: 46vh; }
-    .kc-hero-prev,
-    .kc-hero-next { width: 36px; height: 36px; font-size: .9rem; }
-}
-
-/* ═══════════════════════════════════════════════════
-   2. ADVERTS STRIP
-═══════════════════════════════════════════════════ */
-.kc-advert-section {
-    background: #fff;
-    padding: 20px 0;
-    border-bottom: 1px solid var(--g100);
-}
-.kc-advert-grid {
+/* Slides stack in one grid cell, so the track is as tall as the tallest slide */
+.mb-hero-track { display: grid; }
+.mb-slide {
+    grid-area: 1 / 1;
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 10px;
-}
-.kc-advert-card {
-    display: flex;
-    flex-direction: column;
+    grid-template-columns: 1.05fr 1fr;
+    gap: 56px;
     align-items: center;
-    justify-content: flex-start;
-    gap: 8px;
-    padding: 16px 10px 14px;
-    border-radius: 14px;
-    text-decoration: none;
-    position: relative;
-    overflow: hidden;
-    transition: transform .25s, box-shadow .25s;
-    border: 1.5px solid transparent;
-    text-align: center;
-    min-width: 0;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity .6s ease, visibility 0s linear .6s;
 }
-.kc-advert-card:hover {
-    transform: translateY(-3px);
-    box-shadow: 0 12px 32px rgba(0,0,0,.14);
-}
-.kc-advert-card::before {
-    content: '';
-    position: absolute;
-    inset: 0;
-    opacity: .07;
-    background: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23fff' fill-opacity='1'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
-}
-.kc-advert-card-1 { background: linear-gradient(135deg, var(--navy), var(--navy-m)); border-color: rgba(5,46,100,.2); }
-.kc-advert-card-2 { background: linear-gradient(135deg, var(--cr), #e8143f);        border-color: rgba(191,19,57,.2); }
-.kc-advert-card-3 { background: linear-gradient(135deg, #d9860a, var(--gold));      border-color: rgba(254,196,17,.3); }
-
-.kc-advert-icon {
-    width: 44px;
-    height: 44px;
-    border-radius: 12px;
-    background: rgba(255,255,255,.18);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 20px;
-    color: #fff;
-    flex-shrink: 0;
-    backdrop-filter: blur(4px);
-}
-.kc-advert-text { flex: 1; min-width: 0; }
-.kc-advert-text h6 {
-    font-family: var(--fh);
-    font-size: 12px;
-    font-weight: 800;
-    color: #fff;
-    margin-bottom: 2px;
-    line-height: 1.2;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-.kc-advert-text p {
-    font-size: 10px;
-    color: rgba(255,255,255,.78);
-    margin: 0;
-    line-height: 1.4;
-}
-.kc-advert-arrow { display: none; }
-
-@media (min-width: 640px) {
-    .kc-advert-section { padding: 28px 0; }
-    .kc-advert-grid { gap: 16px; }
-    .kc-advert-card {
-        flex-direction: row;
-        align-items: center;
-        justify-content: flex-start;
-        padding: 18px;
-        gap: 14px;
-        text-align: left;
-    }
-    .kc-advert-icon { width: 48px; height: 48px; font-size: 22px; }
-    .kc-advert-text h6 { font-size: 14px; }
-    .kc-advert-text p  { font-size: 11px; }
-    .kc-advert-arrow {
-        display: flex;
-        margin-left: auto;
-        flex-shrink: 0;
-        width: 30px;
-        height: 30px;
-        border-radius: 50%;
-        background: rgba(255,255,255,.2);
-        align-items: center;
-        justify-content: center;
-        color: #fff;
-        font-size: 12px;
-        transition: background .2s;
-    }
-    .kc-advert-card:hover .kc-advert-arrow { background: rgba(255,255,255,.35); }
-}
-@media (max-width: 399px) {
-    .kc-advert-text p { display: none; }
-    .kc-advert-icon { width: 38px; height: 38px; font-size: 16px; }
-    .kc-advert-text h6 { font-size: 11px; }
-    .kc-advert-card { padding: 14px 8px 12px; }
+.mb-slide.is-active {
+    opacity: 1;
+    visibility: visible;
+    transition: opacity .6s ease;
 }
 
-/* ════════════════════════════════════════════════════════
-   3. IMAGE AD BANNER
-════════════════════════════════════════════════════════ */
-.kc-ad-banner {
-    width: 100%;
-    padding: 0.6rem 0 0.4rem;
-    box-sizing: border-box;
+/* Text: staggered rise-in */
+.mb-slide-text > * {
+    opacity: 0;
+    transform: translateY(18px);
+    transition: opacity .6s ease, transform .7s var(--h-ease);
 }
-.kc-ad-label {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    margin-bottom: 5px;
-    padding: 0 2px;
-}
-.kc-ad-label::before,
-.kc-ad-label::after {
-    content: '';
-    flex: 1;
-    height: 1px;
-    background: #e5e7eb;
-}
-.kc-ad-sponsored {
-    font-size: 10px;
-    color: #9ca3af;
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    white-space: nowrap;
-    font-weight: 500;
-}
-.kc-ad-slider-wrap {
-    position: relative;
-    width: 100%;
-    overflow: hidden;
-    border-radius: 10px;
-    border: 1px solid #e5e7eb;
-    background: #000;
-    line-height: 0;
-}
-.kc-ad-track {
-    display: flex;
-    width: 100%;
-    transition: transform 0.5s cubic-bezier(0.4, 0, 0.2, 1);
-}
-.kc-ad-slide {
-    min-width: 100%;
-    width: 100%;
-    flex-shrink: 0;
-    box-sizing: border-box;
-}
-.kc-ad-slide a { display: block; width: 100%; line-height: 0; }
-.kc-ad-img {
-    display: block;
-    width: 100%;
-    height: auto;
-    aspect-ratio: 970 / 350;
-    object-fit: contain;
-    object-position: center;
-    background: #000;
-}
-.kc-ad-arrow {
-    position: absolute;
-    top: 50%;
-    transform: translateY(-50%);
-    background: rgba(0,0,0,.4);
-    color: #fff;
-    border: none;
-    cursor: pointer;
-    width: 34px;
-    height: 34px;
-    border-radius: 50%;
-    font-size: 24px;
-    line-height: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: background .2s, opacity .2s;
-    z-index: 3;
-    padding: 0;
-    opacity: .7;
-}
-.kc-ad-arrow:hover { background: rgba(0,0,0,.65); opacity: 1; }
-.kc-ad-prev { left: 10px; }
-.kc-ad-next { right: 10px; }
-.kc-ad-badge {
-    position: absolute;
-    bottom: 8px;
-    left: 10px;
-    font-size: 10px;
-    font-weight: 500;
-    color: #fff;
-    background: rgba(0,0,0,.5);
-    border-radius: 3px;
-    padding: 2px 6px;
-    letter-spacing: 0.05em;
-    pointer-events: none;
-    z-index: 3;
-    line-height: 1.4;
-}
-.kc-ad-dots {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    gap: 6px;
-    margin-top: 8px;
-    min-height: 14px;
-}
-.kc-ad-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: #d1d5db;
-    border: none;
-    cursor: pointer;
-    padding: 0;
-    transition: background .25s, transform .25s;
-    flex-shrink: 0;
-}
-.kc-ad-dot.active { background: #374151; transform: scale(1.4); }
+.mb-slide.is-active .mb-slide-text > * { opacity: 1; transform: none; }
+.mb-slide.is-active .mb-slide-text > :nth-child(2) { transition-delay: .08s; }
+.mb-slide.is-active .mb-slide-text > :nth-child(3) { transition-delay: .16s; }
+.mb-slide.is-active .mb-slide-text > :nth-child(4) { transition-delay: .24s; }
 
-@media (min-width: 1200px) { .kc-ad-img { aspect-ratio: 970 / 350; } }
-@media (max-width: 1024px) { .kc-ad-img { aspect-ratio: 728 / 300; } }
-@media (max-width: 768px) {
-    .kc-ad-img { aspect-ratio: 600 / 280; }
-    .kc-ad-arrow { width: 28px; height: 28px; font-size: 20px; }
-    .kc-ad-prev { left: 6px; }
-    .kc-ad-next { right: 6px; }
-}
-@media (max-width: 480px) {
-    .kc-ad-img { aspect-ratio: 3 / 2; }
-    .kc-ad-arrow { width: 24px; height: 24px; font-size: 17px; opacity: .85; }
-    .kc-ad-prev { left: 4px; }
-    .kc-ad-next { right: 4px; }
-    .kc-ad-badge { font-size: 9px; padding: 1px 5px; bottom: 5px; left: 6px; }
-    .kc-ad-dots { gap: 5px; margin-top: 6px; }
-    .kc-ad-dot { width: 5px; height: 5px; }
-}
-@media (max-width: 360px) {
-    .kc-ad-img { aspect-ratio: 5 / 3; }
-    .kc-ad-arrow { width: 22px; height: 22px; font-size: 15px; }
-}
-
-/* ═══════════════════════════════════════════════════
-   4. HUB SECTION — Tabbed Explorer
-═══════════════════════════════════════════════════ */
-.kc-hub-section {
-    background: var(--g50);
-    padding: 60px 0 80px;
-    overflow-x: hidden;
-}
-.kc-hub-header {
-    text-align: center;
-    margin-bottom: 36px;
-}
-.kc-eyebrow {
+.mb-eyebrow {
     display: inline-flex;
     align-items: center;
-    gap: 7px;
-    background: rgba(254,196,17,.12);
-    border: 1px solid rgba(254,196,17,.35);
-    color: var(--gold-d);
-    font-family: var(--fh);
-    font-size: 10px;
+    gap: 8px;
+    background: rgba(56,189,248,.14);
+    border: 1px solid rgba(56,189,248,.38);
+    color: #7dd3fc;
+    font-size: 10.5px;
     font-weight: 800;
-    letter-spacing: 3px;
+    letter-spacing: 2.5px;
     text-transform: uppercase;
     padding: 6px 16px;
     border-radius: 30px;
-    margin-bottom: 14px;
+    margin-bottom: 18px;
 }
-.kc-section-title {
+.mb-title {
     font-family: var(--fh);
+    font-size: clamp(2rem, 4.2vw, 3.4rem);
     font-weight: 900;
-    font-size: clamp(22px, 4vw, 34px);
-    color: var(--navy);
-    line-height: 1.15;
-    margin-bottom: 12px;
-}
-.kc-section-title em { font-style: normal; color: var(--cr); }
-
-/* ── Tab Navigation ── */
-.kc-tabs-nav {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    background: #fff;
-    border: 1.5px solid var(--g100);
-    border-radius: 50px;
-    padding: 4px;
-    width: fit-content;
-    max-width: 100%;
-    margin: 0 auto 32px;
-    box-shadow: 0 2px 12px rgba(5,46,100,.07);
-    overflow-x: auto;
-    scrollbar-width: none;
-    -webkit-overflow-scrolling: touch;
-}
-.kc-tabs-nav::-webkit-scrollbar { display: none; }
-.kc-tab-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 8px 14px;
-    border: none;
-    border-radius: 50px;
-    background: transparent;
-    font-family: var(--fh);
-    font-size: 12px;
-    font-weight: 700;
-    color: var(--g600);
-    cursor: pointer;
-    transition: all .22s;
-    white-space: nowrap;
-    flex-shrink: 0;
-}
-.kc-tab-btn i { font-size: 11px; }
-.kc-tab-btn:hover { color: var(--navy); background: var(--g50); }
-.kc-tab-btn.active {
-    background: var(--navy);
+    line-height: 1.1;
+    letter-spacing: -.02em;
     color: #fff;
-    box-shadow: 0 4px 14px rgba(5,46,100,.25);
+    margin: 0 0 18px;
 }
-.kc-tab-btn.active i { color: var(--gold); }
-.kc-tab-count {
+.mb-title em {
+    font-style: normal;
+    background: linear-gradient(90deg, #7dd3fc, var(--h-sky));
+    -webkit-background-clip: text;
+            background-clip: text;
+    color: transparent;
+}
+.mb-sub {
+    font-size: clamp(14px, 1.4vw, 17px);
+    color: rgba(255,255,255,.78);
+    line-height: 1.7;
+    max-width: 520px;
+    margin: 0 0 30px;
+}
+.mb-btns { display: flex; gap: 12px; flex-wrap: wrap; }
+.mb-btn-main,
+.mb-btn-ghost {
     display: inline-flex;
     align-items: center;
-    justify-content: center;
-    min-width: 18px;
-    height: 18px;
-    padding: 0 4px;
-    border-radius: 9px;
-    background: rgba(255,255,255,.2);
-    font-size: 9px;
+    gap: 8px;
+    padding: 13px 28px;
+    border-radius: 50px;
+    font-family: var(--fh);
+    font-size: 14px;
     font-weight: 800;
-}
-.kc-tab-btn:not(.active) .kc-tab-count { background: var(--g100); color: var(--navy); }
-.kc-tab-panel { display: none; }
-.kc-tab-panel.active { display: block; }
-
-/* ── Grid ── */
-.kc-hub-grid {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 12px;
-    width: 100%;
-    box-sizing: border-box;
-}
-@media (min-width: 640px)  { .kc-hub-grid { grid-template-columns: repeat(3, 1fr); gap: 16px; } }
-@media (min-width: 1024px) { .kc-hub-grid { grid-template-columns: repeat(4, 1fr); gap: 18px; } }
-
-/* ── Lazy load animation ── */
-.kc-grid-item {
-    opacity: 0;
-    transform: translateY(18px);
-    transition: opacity .38s ease, transform .38s ease;
-    min-width: 0;
-    width: 100%;
-    box-sizing: border-box;
-}
-.kc-grid-item.kc-in-view { opacity: 1; transform: translateY(0); }
-.kc-item-hidden { display: none !important; }
-.kc-grid-item:nth-child(2) { transition-delay: .04s; }
-.kc-grid-item:nth-child(3) { transition-delay: .08s; }
-.kc-grid-item:nth-child(4) { transition-delay: .12s; }
-.kc-grid-item:nth-child(5) { transition-delay: .16s; }
-.kc-grid-item:nth-child(6) { transition-delay: .20s; }
-.kc-grid-item:nth-child(7) { transition-delay: .24s; }
-.kc-grid-item:nth-child(8) { transition-delay: .28s; }
-
-/* ══════════════════════════════════════════════════════════════
-   UNIFIED CARD SYSTEM
-   Events (.kc-ev-card) · Creators (.kc-cr-card) · Music (.kc-mu-card)
-   All share the same poster silhouette, overlay, badge & price
-   positioning — synced with ticketstyle.css .ecard
-══════════════════════════════════════════════════════════════ */
-
-/* ── Shared card shell ── */
-.kc-ev-card,
-.kc-cr-card,
-.kc-mu-card {
-    background: var(--white);
-    border-radius: 14px;
-    overflow: hidden;
-    border: 1.5px solid var(--g100);
-    box-shadow: 0 4px 18px rgba(5,46,100,.08);
-    display: flex;
-    flex-direction: column;
-    transition: transform .28s ease, box-shadow .28s ease, border-color .2s;
-    min-width: 0;
-    width: 100%;
-    box-sizing: border-box;
     text-decoration: none;
+    transition: background .2s, color .2s, border-color .2s, transform .2s, box-shadow .2s;
 }
-.kc-ev-card:hover,
-.kc-cr-card:hover,
-.kc-mu-card:hover {
-    transform: translateY(-7px);
-    box-shadow: 0 20px 50px rgba(5,46,100,.18);
-    border-color: rgba(5,46,100,.14);
+.mb-btn-main {
+    background: var(--h-sky);
+    color: var(--h-navy);
+    box-shadow: 0 8px 24px rgba(56,189,248,.35);
+}
+.mb-btn-main:hover {
+    background: #7dd3fc;
+    color: var(--h-navy);
+    transform: translateY(-2px);
+}
+.mb-btn-ghost {
+    border: 1.5px solid rgba(255,255,255,.35);
+    color: #fff;
+    background: rgba(255,255,255,.04);
+}
+.mb-btn-ghost:hover {
+    border-color: #fff;
+    background: rgba(255,255,255,.12);
+    color: #fff;
 }
 
-/* ── Shared image area — portrait poster ratio (3:4) ── */
-.kc-ev-img,
-.kc-mu-cover {
+/* Image: wipe-in reveal + slow zoom-out */
+.mb-visual { position: relative; }
+.mb-frame {
     position: relative;
-    width: 100%;
-    aspect-ratio: 3 / 4;
+    aspect-ratio: 4 / 3;
+    border-radius: 24px;
     overflow: hidden;
-    background: var(--g100);
-    flex-shrink: 0;
-    /* override old padding-top trick */
-    padding-top: 0 !important;
+    border: 1px solid rgba(255,255,255,.14);
+    box-shadow: 0 30px 80px rgba(0,0,0,.45);
+    clip-path: inset(0 0 0 100% round 24px);
+    transition: clip-path .9s cubic-bezier(.77,0,.18,1);
 }
-.kc-ev-img img,
-.kc-mu-cover img {
-    position: absolute;
-    inset: 0;
+.mb-slide.is-active .mb-frame { clip-path: inset(0 0 0 0 round 24px); }
+.mb-frame img {
     width: 100%;
     height: 100%;
     object-fit: cover;
     display: block;
-    transition: transform .55s ease;
+    transform: scale(1.12);
+    transition: transform 6s ease-out;
 }
-.kc-ev-card:hover .kc-ev-img img,
-.kc-mu-card:hover .kc-mu-cover img { transform: scale(1.06); }
-
-/* Music cover stays square */
-.kc-mu-cover { aspect-ratio: 1 / 1; }
-
-/* ── Gradient fade — bottom-to-top ── */
-.kc-ev-img-grad {
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(
-        to top,
-        rgba(5,46,100,.88) 0%,
-        rgba(5,46,100,.30) 45%,
-        transparent 100%
-    );
-}
-
-/* ── Status / genre badge — top left ── */
-.kc-ev-badge,
-.kc-mu-badge {
-    position: absolute;
-    top: 8px;
-    left: 8px;
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    background: rgba(5,46,100,.82);
-    color: #fff;
-    font-family: var(--fh);
-    font-size: 10px;
-    font-weight: 700;
-    letter-spacing: .5px;
-    text-transform: uppercase;
-    padding: 3px 9px;
-    border-radius: 20px;
-    border: 1px solid rgba(254,196,17,.38);
-    backdrop-filter: blur(5px);
-    white-space: nowrap;
-    line-height: 1;
-}
-.kc-ev-badge i,
-.kc-mu-badge i { color: var(--gold); font-size: 9px; }
-
-.kc-ev-badge.upcoming {
-    background: rgba(5,46,100,.85);
-    color: var(--gold);
-    border-color: rgba(254,196,17,.3);
-}
-.kc-ev-badge.live {
-    background: rgba(22,163,74,.9);
-    color: #fff;
-    border-color: transparent;
-    animation: kcLivePulse 2s infinite;
-}
-.kc-ev-badge.past {
-    background: rgba(50,55,70,.8);
-    color: rgba(255,255,255,.65);
-    border-color: transparent;
-}
-@keyframes kcLivePulse {
-    0%,100% { box-shadow: 0 0 0 0 rgba(22,163,74,.5); }
-    50%      { box-shadow: 0 0 0 6px rgba(22,163,74,0); }
-}
-
-/* ── Countdown chip — top right (events only) ── */
-.kc-ev-cd {
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    font-family: var(--fh);
-    font-size: 9px;
-    font-weight: 800;
-    padding: 3px 8px;
-    border-radius: 20px;
-    backdrop-filter: blur(5px);
-    line-height: 1;
-    white-space: nowrap;
-}
-.kc-ev-cd.soon  { background: rgba(191,19,57,.9);  color: #fff; }
-.kc-ev-cd.days  { background: rgba(254,196,17,.9); color: var(--navy); }
-.kc-ev-cd.ended { background: rgba(40,45,60,.8);   color: rgba(255,255,255,.5); }
-
-/* ── Hot / New badges — top right (music only) ── */
-.kc-mu-hot-badge,
-.kc-mu-new-badge {
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    font-family: var(--fh);
-    font-size: 9px;
-    font-weight: 800;
-    padding: 3px 8px;
-    border-radius: 999px;
-    line-height: 1;
-    color: #fff;
-}
-.kc-mu-hot-badge {
-    background: rgba(191,19,57,.9);
-    animation: muHotPulse 2s infinite;
-}
-.kc-mu-new-badge { background: rgba(5,100,52,.9); }
-@keyframes muHotPulse { 0%,100%{opacity:1} 50%{opacity:.7} }
-
-/* ── Price tag — bottom left (crimson pill) ── */
-.kc-ev-price {
-    position: absolute;
-    bottom: 10px;
-    left: 10px;
-    background: var(--cr);
-    color: #fff;
-    font-family: var(--fh);
-    font-size: 11px;
-    font-weight: 800;
-    padding: 4px 11px;
-    border-radius: 6px;
-    line-height: 1.4;
-    white-space: nowrap;
-    letter-spacing: .3px;
-    text-shadow: none;
-}
-.kc-ev-price.free { background: var(--green); }
-
-/* ── Play button — bottom right (music only) ── */
-.kc-mu-play-btn {
-    position: absolute;
-    bottom: 10px;
-    right: 10px;
-    width: 38px;
-    height: 38px;
-    border-radius: 50%;
-    background: rgba(255,255,255,.92);
-    border: none;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 14px;
-    color: var(--navy);
-    box-shadow: 0 3px 14px rgba(0,0,0,.28);
-    transition: transform .22s;
-    z-index: 10;
-    /* remove old full-cover overlay behaviour */
-    inset: auto;
-    width: 38px;
-    height: 38px;
-}
-.kc-mu-card:hover .kc-mu-play-btn { transform: scale(1.12); }
-/* Hide the old scale-in icon wrapper */
-.kc-mu-play-btn .kc-play-icon {
-    width: auto;
-    height: auto;
-    background: transparent;
-    box-shadow: none;
-    transform: scale(1) !important;
-    color: inherit;
-}
-
-/* Music cover placeholder */
-.kc-mu-cover-ph {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 36px;
-    color: rgba(254,196,17,.3);
-}
-
-/* ── Views badge (optional overlay) ── */
-.kc-ev-views {
-    position: absolute;
-    bottom: 10px;
-    right: 10px;
-    background: rgba(5,46,100,.65);
-    color: rgba(255,255,255,.82);
-    font-family: var(--fh);
-    font-size: 9px;
-    font-weight: 700;
-    padding: 3px 7px;
-    border-radius: 20px;
-    backdrop-filter: blur(4px);
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    line-height: 1;
-}
-.kc-ev-views i { font-size: 8px; }
-
-/* ── Shared card body ── */
-.kc-ev-body,
-.kc-mu-body {
-    padding: 12px 13px 15px;
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    gap: 5px;
-    min-width: 0;
-}
-
-/* ── Shared title ── */
-.kc-ev-title,
-.kc-mu-title {
-    font-family: var(--fh);
-    font-weight: 800;
-    font-size: 13px;
-    color: var(--navy);
-    line-height: 1.35;
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-    margin-bottom: 0;
-}
-
-/* ── Host row (events) ── */
-.kc-ev-host {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    min-width: 0;
-    overflow: hidden;
-}
-.kc-ev-host img {
-    width: 20px;
-    height: 20px;
-    border-radius: 50%;
-    object-fit: cover;
-    border: 1.5px solid var(--navy-l);
-    flex-shrink: 0;
-}
-.kc-ev-host span {
-    font-size: 10px;
-    color: var(--g400);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-.kc-ev-host strong { color: var(--navy); }
-
-/* ── Meta rows (events) ── */
-.kc-ev-meta { display: flex; flex-direction: column; gap: 3px; }
-.kc-ev-meta-row {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    font-size: 10px;
-    color: var(--g600);
-    min-width: 0;
-    overflow: hidden;
-}
-.kc-ev-meta-row i {
-    color: var(--navy);
-    font-size: 9px;
-    width: 11px;
-    flex-shrink: 0;
-}
-
-/* ── Divider ── */
-.kc-ev-sep {
-    height: 1px;
-    background: var(--g100);
-    margin: 4px 0 6px;
-}
-
-/* ── CTA button — shared across all three card types ── */
-.kc-ev-cta,
-.kc-cr-cta {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 5px;
-    padding: 9px 10px;
-    border-radius: 8px;
-    font-family: var(--fh);
-    font-size: 11px;
-    font-weight: 800;
-    text-decoration: none;
-    transition: background .2s, box-shadow .2s;
-    margin-top: auto;
-    border: none;
-    cursor: pointer;
-    text-align: center;
-}
-.kc-ev-cta.buy      { background: var(--cr);    color: #fff; }
-.kc-ev-cta.buy:hover { background: var(--cr-d); box-shadow: 0 4px 14px rgba(191,19,57,.35); }
-.kc-ev-cta.free-t   { background: var(--green); color: #fff; }
-.kc-ev-cta.free-t:hover { background: #138a3e; box-shadow: 0 4px 14px rgba(22,163,74,.3); }
-.kc-ev-cta.ended,
-.kc-ev-cta.soon-t   { background: var(--g100);  color: var(--g400); cursor: default; }
-.kc-cr-cta          { background: var(--navy);   color: #fff; }
-.kc-cr-cta:hover    { background: var(--cr);     color: #fff; box-shadow: 0 4px 12px rgba(191,19,57,.3); }
-
-/* ── Past event desaturation ── */
-.kc-ev-past { filter: saturate(.55); }
-.kc-ev-past:hover { filter: saturate(1); transition: filter .3s ease; }
-
-/* ══════════════════════════════════════════════════
-   CREATOR CARD — banner + floating avatar
-══════════════════════════════════════════════════ */
-.kc-cr-banner {
-    height: 56px;
-    background: linear-gradient(135deg, var(--navy), var(--navy-m));
-    position: relative;
-    flex-shrink: 0;
-}
-.kc-cr-banner::before {
+.mb-slide.is-active .mb-frame img { transform: scale(1); }
+.mb-frame::after {
     content: '';
     position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 3px;
-    background: var(--gold);
+    inset: 0;
+    background: linear-gradient(180deg, rgba(7,29,58,0) 45%, rgba(7,29,58,.55) 100%);
+}
+
+/* Floating info cards over the image */
+.mb-chip {
+    position: absolute;
     z-index: 2;
-}
-.kc-cr-av-wrap {
-    display: flex;
-    justify-content: center;
-    margin-top: -34px;
-    margin-bottom: 7px;
-    position: relative;
-    z-index: 5;
-}
-.kc-cr-av {
-    width: 68px;
-    height: 68px;
-    border-radius: 50%;
-    object-fit: cover;
-    border: 3px solid var(--white);
-    box-shadow: 0 4px 14px rgba(5,46,100,.20);
-    background: var(--g100);
-}
-.kc-cr-av-fb {
-    width: 68px;
-    height: 68px;
-    border-radius: 50%;
-    background: linear-gradient(135deg, var(--navy), var(--navy-m));
-    border: 3px solid var(--white);
-    box-shadow: 0 4px 14px rgba(5,46,100,.20);
     display: flex;
     align-items: center;
-    justify-content: center;
-    font-family: var(--fh);
-    font-weight: 900;
-    font-size: 24px;
-    color: var(--gold);
-}
-.kc-cr-body {
-    padding: 0 13px 14px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    text-align: center;
-    flex: 1;
-    min-width: 0;
-}
-.kc-cr-name {
-    font-family: var(--fh);
-    font-weight: 800;
-    font-size: 13px;
-    color: var(--navy);
-    margin-bottom: 2px;
-    line-height: 1.2;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    width: 100%;
-}
-.kc-cr-uname {
-    font-size: 11px;
-    color: var(--cr);
-    font-weight: 700;
-    margin-bottom: 9px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    width: 100%;
-}
-.kc-cr-stats {
-    display: flex;
-    width: 100%;
-    margin-bottom: 10px;
-    border: 1.5px solid var(--g100);
-    border-radius: 9px;
-    overflow: hidden;
-}
-.kc-cr-stat {
-    flex: 1;
-    padding: 7px 3px;
-    text-align: center;
-    border-right: 1.5px solid var(--g100);
-}
-.kc-cr-stat:last-child { border-right: none; }
-.kc-cr-stat-n {
-    font-family: var(--fh);
-    font-weight: 900;
-    font-size: 14px;
-    color: var(--navy);
-    line-height: 1;
-}
-.kc-cr-stat-l {
-    font-size: 8px;
-    color: var(--g400);
-    font-weight: 600;
-    letter-spacing: .8px;
-    text-transform: uppercase;
-    margin-top: 2px;
-}
-
-/* ══════════════════════════════════════════════════
-   MUSIC CARD — artist + foot row
-══════════════════════════════════════════════════ */
-.kc-mu-artist {
-    font-size: 10px;
-    font-weight: 700;
-    color: var(--g400);
-    text-transform: uppercase;
-    letter-spacing: .04em;
-    margin-bottom: 3px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-.kc-mu-foot {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 4px;
-    margin-top: auto;
-    padding-top: 8px;
-    border-top: 1px solid var(--g100);
-}
-.kc-mu-free-tag {
-    display: inline-flex;
-    align-items: center;
-    gap: 3px;
-    background: #f0fdf4;
-    color: #166534;
-    border: 1px solid #bbf7d0;
-    font-size: 9px;
-    font-weight: 700;
-    padding: 3px 8px;
-    border-radius: 999px;
-}
-.kc-mu-price {
-    font-size: 13px;
-    font-weight: 900;
-    color: var(--navy);
-}
-.kc-mu-cta {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    background: var(--cr);
-    color: #fff;
-    font-family: var(--fh);
-    font-size: 9px;
-    font-weight: 800;
-    padding: 5px 10px;
-    border-radius: 7px;
-    text-transform: uppercase;
-    letter-spacing: .03em;
-    text-decoration: none;
-    transition: background .2s, box-shadow .2s;
-}
-.kc-mu-cta:hover { background: var(--cr-d); box-shadow: 0 3px 10px rgba(191,19,57,.3); }
-.kc-mu-meta {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    font-size: 9px;
-    color: var(--g400);
-    margin-top: 5px;
-}
-.kc-mu-meta span { display: flex; align-items: center; gap: 3px; }
-.kc-mu-meta i { font-size: 8px; color: var(--g200); }
-
-/* ══════════════════════════════════════════════════
-   MONTH PILLS ROW
-══════════════════════════════════════════════════ */
-.kc-month-pills-row {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    margin-bottom: 18px;
-    overflow-x: auto;
-    overflow-y: visible;
-    flex-wrap: nowrap;
-    scrollbar-width: none;
-    -webkit-overflow-scrolling: touch;
-    padding-bottom: 4px;
-}
-.kc-month-pills-row::-webkit-scrollbar { display: none; }
-button.kc-month-pill,
-.kc-month-pill {
-    -webkit-appearance: none;
-    appearance: none;
-    display: inline-flex;
-    align-items: center;
-    padding: 5px 13px;
-    border: 1.5px solid var(--g200);
-    border-radius: 20px;
-    font-family: var(--fh);
-    font-size: 11px;
-    font-weight: 700;
-    line-height: 1.4;
-    color: var(--g600) !important;
-    background: var(--white) !important;
-    cursor: pointer;
-    white-space: nowrap;
-    flex-shrink: 0;
-    transition: all .18s;
-    box-shadow: none !important;
-    outline: none;
-    margin: 0;
-}
-button.kc-month-pill:hover,
-.kc-month-pill:hover {
-    border-color: var(--navy);
-    color: var(--navy) !important;
-    background: var(--navy-l) !important;
-}
-button.kc-month-pill.active,
-.kc-month-pill.active {
-    background: var(--navy) !important;
-    color: #fff !important;
-    border-color: var(--navy);
-    box-shadow: 0 3px 10px rgba(5,46,100,.22) !important;
-}
-
-/* ══════════════════════════════════════════════════
-   TAB FILTER ROW
-══════════════════════════════════════════════════ */
-.kc-tab-filter-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    flex-wrap: wrap;
     gap: 10px;
-    margin-bottom: 18px;
+    background: rgba(255,255,255,.97);
+    color: #0f172a;
+    padding: 10px 16px 10px 10px;
+    border-radius: 14px;
+    box-shadow: 0 14px 34px rgba(0,0,0,.28);
+    opacity: 0;
+    transform: translateY(12px) scale(.96);
+    transition: opacity .5s ease, transform .6s var(--h-ease);
 }
-.kc-tab-filter-left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.kc-filter-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    padding: 5px 12px;
-    border: 1.5px solid var(--g200);
-    border-radius: 20px;
-    font-size: 11px;
-    font-weight: 700;
-    color: var(--g600);
-    background: var(--white);
-    cursor: pointer;
-    transition: all .18s;
-    white-space: nowrap;
+.mb-slide.is-active .mb-chip { opacity: 1; transform: none; transition-delay: .6s; }
+.mb-slide.is-active .mb-chip-2 { transition-delay: .75s; }
+.mb-chip-1 { left: -28px; bottom: 34px; }
+.mb-chip-2 { right: -18px; top: 28px; }
+.mb-chip-ico {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    display: grid;
+    place-items: center;
+    background: var(--bl-tint, #e0f2fe);
+    color: var(--h-blue);
+    font-size: 15px;
+    flex-shrink: 0;
 }
-.kc-filter-pill:hover,
-.kc-filter-pill.active {
-    border-color: var(--navy);
-    color: var(--navy);
-    background: var(--navy-l);
-}
-.kc-tab-search-wrap {
+.mb-chip-ico.is-green { background: #dcfce7; color: #16a34a; }
+.mb-chip strong { display: block; font-size: 13px; font-weight: 800; line-height: 1.2; }
+.mb-chip span   { display: block; font-size: 11.5px; color: #64748b; margin-top: 2px; }
+
+/* Controls: counter · progress bars · arrows */
+.mb-controls {
     display: flex;
     align-items: center;
-    gap: 7px;
-    background: var(--white);
-    border: 1.5px solid var(--g200);
-    border-radius: 30px;
-    padding: 0 12px;
-    height: 36px;
-    transition: border-color .2s;
-    flex: 1;
-    min-width: 0;
+    gap: 20px;
+    margin-top: 44px;
 }
-.kc-tab-search-wrap:focus-within { border-color: var(--navy); }
-.kc-tab-search-wrap i { color: var(--g400); font-size: 11px; flex-shrink: 0; }
-.kc-tab-search-wrap input {
-    border: none;
-    outline: none;
-    font-size: 12px;
-    color: var(--navy);
+.mb-count {
+    font-size: 13px;
+    font-weight: 800;
+    letter-spacing: 1px;
+    color: rgba(255,255,255,.5);
+    font-variant-numeric: tabular-nums;
+}
+.mb-count b { color: #fff; }
+.mb-bars { display: flex; gap: 8px; flex: 1; max-width: 320px; }
+.mb-bar {
+    flex: 1;
+    padding: 10px 0;            /* taller hit area than the 4px line */
+    border: 0;
+    background: none;
+    cursor: pointer;
+}
+.mb-bar span {
+    display: block;
+    position: relative;
+    height: 4px;
+    border-radius: 4px;
+    background: rgba(255,255,255,.18);
+    overflow: hidden;
+}
+.mb-bar span::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: var(--h-sky);
+    transform: scaleX(0);
+    transform-origin: left;
+}
+.mb-bar.is-done span::after { transform: scaleX(1); }
+.mb-bar.is-active span::after { animation: mbFill var(--mb-interval, 6s) linear forwards; }
+.mb-hero.is-paused .mb-bar.is-active span::after { animation-play-state: paused; }
+.mb-hero.is-static .mb-bar.is-active span::after { animation: none; transform: scaleX(1); }
+.mb-bar:focus-visible span { outline: 2px solid #7dd3fc; outline-offset: 4px; }
+@keyframes mbFill { to { transform: scaleX(1); } }
+
+.mb-arrows { display: flex; gap: 8px; margin-left: auto; }
+.mb-arrow {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    border: 1.5px solid rgba(255,255,255,.28);
     background: transparent;
-    flex: 1;
-    min-width: 0;
-    width: 100%;
+    color: #fff;
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+    transition: background .2s, color .2s, border-color .2s;
 }
-.kc-tab-search-wrap input::placeholder { color: var(--g400); }
-
-@media (max-width: 639px) {
-    .kc-tab-filter-row { flex-direction: column; align-items: stretch; }
-    .kc-tab-filter-left {
-        flex-wrap: nowrap;
-        overflow-x: auto;
-        scrollbar-width: none;
-        -webkit-overflow-scrolling: touch;
-        padding-bottom: 2px;
-    }
-    .kc-tab-filter-left::-webkit-scrollbar { display: none; }
-    .kc-tab-search-wrap { width: 100%; }
+.mb-arrow:hover,
+.mb-arrow:focus-visible {
+    background: var(--h-sky);
+    border-color: var(--h-sky);
+    color: var(--h-navy);
 }
 
-/* ══════════════════════════════════════════════════
-   RESPONSIVE — card image ratios
-══════════════════════════════════════════════════ */
-@media (max-width: 600px) {
-    .kc-ev-img  { aspect-ratio: 2 / 3; }
-    .kc-mu-cover { aspect-ratio: 1 / 1; }
-    .kc-ev-badge, .kc-mu-badge { font-size: 9px; padding: 2px 7px; top: 6px; left: 6px; }
-    .kc-ev-cd   { font-size: 8px; padding: 2px 6px; top: 6px; right: 6px; }
-    .kc-ev-price { font-size: 10px; padding: 3px 9px; bottom: 8px; left: 8px; }
-    .kc-mu-play-btn { width: 32px; height: 32px; font-size: 12px; bottom: 8px; right: 8px; }
-    .kc-ev-title, .kc-mu-title { font-size: 12px; }
-    .kc-cr-av, .kc-cr-av-fb   { width: 60px; height: 60px; }
+
+@media (max-width: 991px) {
+    .mb-hero { padding: 36px 0 32px; }
+    .mb-slide { grid-template-columns: 1fr; gap: 28px; }
+    .mb-visual { order: -1; max-width: 600px; }
+    .mb-frame { aspect-ratio: 16 / 9; }
+    .mb-chip-1 { left: 12px; bottom: 12px; }
+    .mb-chip-2 { right: 12px; top: 12px; }
+    .mb-controls { margin-top: 30px; }
 }
-@media (max-width: 380px) {
-    .kc-ev-badge, .kc-mu-badge,
-    .kc-ev-cd, .kc-ev-price { display: none; }
+@media (max-width: 576px) {
+    .mb-chip-2 { display: none; }
+    .mb-btn-main, .mb-btn-ghost { padding: 12px 22px; font-size: 13.5px; }
+    .mb-controls { gap: 14px; }
+    .mb-arrow { width: 40px; height: 40px; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .mb-slide, .mb-slide *, .mb-frame, .mb-frame img { transition: none !important; }
+    .mb-frame { clip-path: none !important; }
+    .mb-frame img { transform: none !important; }
 }
 
 /* ═══════════════════════════════════════════════════
-   5. MINI AUDIO PLAYER
+   2. LIVE DASHBOARD PREVIEW — animated product mock
 ═══════════════════════════════════════════════════ */
-.kc-mini-player {
-    position: fixed;
-    bottom: 0; left: 0; right: 0;
-    z-index: 9999;
-    display: none;
+.mb-dash {
+    --d-navy:  #071d3a;
+    --d-blue:  var(--bl-primary, #0284c7);
+    --d-sky:   var(--bl-accent, #38bdf8);
+    --d-tint:  var(--bl-tint, #e0f2fe);
+    --d-ink:   #0f172a;
+    --d-muted: #64748b;
+    --d-line:  #e2e8f0;
+    --d-soft:  #eef2f7;
+    --d-green: #16a34a;
+    --d-ease:  cubic-bezier(.16,1,.3,1);
+    position: relative;
+    overflow: hidden;
+    padding: 88px 0 96px;
+    background: linear-gradient(180deg, #f0f9ff 0%, #fff 72%);
+}
+.mb-dash::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(640px 320px at 15% 0%, rgba(56,189,248,.2), transparent 70%);
+    pointer-events: none;
+}
+.mb-dash .container { position: relative; }
+
+/* Heading */
+.mb-dash-head { text-align: left; max-width: 620px; margin: 0 0 36px; }
+.mb-dash-eyebrow {
+    display: inline-flex;
     align-items: center;
-    gap: 14px;
-    background: rgba(5,30,68,.97);
-    backdrop-filter: blur(16px);
-    border-top: 1px solid rgba(255,255,255,.08);
-    padding: 10px 20px;
-    box-shadow: 0 -8px 32px rgba(0,0,0,.4);
-    animation: playerSlideUp .3s cubic-bezier(.16,1,.3,1) both;
+    gap: 8px;
+    background: var(--d-tint);
+    color: var(--d-blue);
+    font-family: var(--fh);
+    font-size: 10.5px;
+    font-weight: 800;
+    letter-spacing: 2.5px;
+    text-transform: uppercase;
+    padding: 6px 16px;
+    border-radius: 30px;
 }
-.kc-mini-player.show { display: flex; }
-@keyframes playerSlideUp {
-    from { transform: translateY(100%); opacity: 0; }
-    to   { transform: translateY(0);    opacity: 1; }
+.mb-dash-title {
+    font-family: var(--fh);
+    font-size: clamp(1.5rem, 2.4vw, 2rem);
+    font-weight: 800;
+    line-height: 1.2;
+    letter-spacing: -.02em;
+    color: var(--d-navy);
+    margin: 16px 0 14px;
+    text-wrap: balance;
 }
-.kc-mp-cover {
-    width: 44px;
-    height: 44px;
-    border-radius: 10px;
-    flex-shrink: 0;
-    background: #1a2744;
-    border: 1px solid rgba(255,255,255,.1);
+.mb-dash-title em { font-style: normal; color: var(--d-blue); }
+.mb-dash-sub { color: var(--d-muted); font-size: 15px; line-height: 1.7; margin: 0; }
+
+/* App frame */
+.mb-app {
+    background: #fff;
+    border: 1px solid var(--d-line);
+    border-radius: 20px;
+    overflow: hidden;
+    color: var(--d-ink);
+    font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    box-shadow: 0 40px 90px -30px rgba(7,29,58,.35), 0 0 0 6px rgba(56,189,248,.08);
+    opacity: 0;
+    transform: translateY(40px) scale(.98);
+    transition: opacity .8s ease, transform 1s var(--d-ease);
+}
+.mb-dash.is-in .mb-app { opacity: 1; transform: none; }
+
+.mb-app-bar {
     display: flex;
     align-items: center;
-    justify-content: center;
-    font-size: 1rem;
-    color: rgba(255,255,255,.3);
-    overflow: hidden;
+    gap: 14px;
+    padding: 12px 16px;
+    background: #f8fafc;
+    border-bottom: 1px solid var(--d-line);
 }
-.kc-mp-cover img { width: 100%; height: 100%; object-fit: cover; border-radius: 10px; }
-.kc-mp-info { flex-shrink: 0; min-width: 0; max-width: 160px; }
-.kc-mp-title  { font-size: .78rem; font-weight: 700; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.kc-mp-artist { font-size: .65rem; color: rgba(255,255,255,.45); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.kc-mp-controls { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
-.kc-mp-ctrl {
+.mb-app-dots { display: flex; gap: 6px; }
+.mb-app-dots i { width: 11px; height: 11px; border-radius: 50%; background: #f87171; }
+.mb-app-dots i:nth-child(2) { background: #fbbf24; }
+.mb-app-dots i:nth-child(3) { background: #4ade80; }
+.mb-app-url {
+    flex: 1;
+    max-width: 420px;
+    margin: 0 auto;
+    background: #fff;
+    border: 1px solid var(--d-line);
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 12px;
+    color: var(--d-muted);
+    text-align: center;
+}
+.mb-app-url i { color: var(--d-green); margin-right: 4px; font-size: 10px; }
+.mb-app-tag {
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: .5px;
+    text-transform: uppercase;
+    color: var(--d-blue);
+    background: var(--d-tint);
+    padding: 4px 10px;
+    border-radius: 20px;
+    white-space: nowrap;
+}
+
+.mb-app-body { display: grid; grid-template-columns: 236px 1fr; }
+
+/* Sidebar */
+.mb-app-side { border-right: 1px solid var(--d-line); padding: 18px 14px; }
+.mb-app-user {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px;
+    border: 1px solid var(--d-line);
+    border-radius: 12px;
+    margin-bottom: 18px;
+}
+.mb-app-av {
     width: 34px;
     height: 34px;
     border-radius: 50%;
-    border: none;
-    cursor: pointer;
-    background: rgba(255,255,255,.08);
-    color: rgba(255,255,255,.6);
+    background: var(--d-tint);
+    color: var(--d-blue);
+    display: grid;
+    place-items: center;
+    font-weight: 800;
+    font-size: 13px;
+}
+.mb-app-user strong { display: block; font-size: 13px; }
+.mb-app-user em {
+    font-style: normal;
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: .8px;
+    text-transform: uppercase;
+    color: #b45309;
+    background: #fef3c7;
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+.mb-app-nav span {
     display: flex;
     align-items: center;
-    justify-content: center;
-    font-size: .78rem;
-    transition: background .15s, color .15s;
-}
-.kc-mp-ctrl:hover { background: rgba(255,255,255,.15); color: #fff; }
-.kc-mp-ctrl.play-btn {
-    width: 40px;
-    height: 40px;
-    background: linear-gradient(135deg, var(--cr), #e8143f);
-    color: #fff;
-    font-size: .88rem;
-    box-shadow: 0 3px 14px rgba(191,19,57,.4);
-}
-.kc-mp-ctrl.play-btn:hover { background: linear-gradient(135deg, #d4163f, #ff2050); }
-.kc-mp-progress { flex: 1; min-width: 0; }
-.kc-mp-bar-wrap { cursor: pointer; padding: 6px 0; }
-.kc-mp-bar {
-    width: 100%;
-    height: 4px;
-    border-radius: 999px;
-    background: rgba(255,255,255,.12);
-    overflow: hidden;
-}
-.kc-mp-fill {
-    height: 100%;
-    border-radius: 999px;
-    width: 0%;
-    background: linear-gradient(90deg, var(--cr), var(--gold));
-    transition: width .3s linear;
-}
-.kc-mp-times {
-    display: flex;
-    justify-content: space-between;
-    font-size: .6rem;
-    color: rgba(255,255,255,.35);
-    margin-top: 3px;
-}
-.kc-mp-close {
-    flex-shrink: 0;
-    width: 28px;
-    height: 28px;
-    border-radius: 50%;
-    border: none;
-    cursor: pointer;
-    background: rgba(255,255,255,.07);
-    color: rgba(255,255,255,.4);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: .72rem;
-    transition: background .15s, color .15s;
-}
-.kc-mp-close:hover { background: rgba(191,19,57,.3); color: #fff; }
-
-@media (max-width: 540px) {
-    .kc-mini-player { gap: 10px; padding: 10px 14px; }
-    .kc-mp-info { display: none; }
-    .kc-mp-progress { flex: 1; }
-}
-
-/* ── Event card as full link ── */
-a.kc-ev-card {
-    text-decoration: none;
-    color: inherit;
-}
-a.kc-ev-card:hover {
-    border-color: rgba(254,196,17,.35);
-}
-
-/* ── Views badge ── */
-.kc-ev-views {
-    position: absolute;
-    bottom: 10px;
-    right: 10px;
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    background: rgba(5,46,100,.72);
-    color: rgba(255,255,255,.9);
-    font-family: var(--fh);
-    font-size: 10px;
-    font-weight: 700;
-    padding: 3px 8px;
-    border-radius: 20px;
-    backdrop-filter: blur(5px);
-    border: 1px solid rgba(255,255,255,.12);
-    line-height: 1;
+    gap: 10px;
+    padding: 9px 10px;
+    border-radius: 10px;
+    font-size: 13px;
+    color: #334155;
+    margin-bottom: 2px;
     white-space: nowrap;
 }
-.kc-ev-views i {
-    font-size: 9px;
-    color: var(--gold);
+.mb-app-nav span i { width: 18px; text-align: center; color: var(--d-blue); font-size: 13px; }
+.mb-app-nav span.is-active {
+    background: var(--d-tint);
+    color: var(--d-blue);
+    font-weight: 700;
+    box-shadow: inset 3px 0 0 var(--d-blue);
+}
+.mb-app-nav b {
+    margin-left: auto;
+    font-size: 10.5px;
+    background: var(--d-blue);
+    color: #fff;
+    padding: 1px 7px;
+    border-radius: 6px;
+    font-variant-numeric: tabular-nums;
+}
+.mb-app-group {
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: #94a3b8;
+    margin: 16px 10px 6px;
 }
 
-/* ── Load More button ── */
-.kc-load-more-wrap {
-    text-align: center;
-    margin-top: 36px;
+/* Main panel */
+.mb-app-main { padding: 20px 24px 24px; background: #f8fafc; min-width: 0; }
+.mb-app-top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+.mb-app-search {
+    flex: 1;
+    min-width: 200px;
+    max-width: 360px;
+    background: #fff;
+    border: 1px solid var(--d-line);
+    border-radius: 10px;
+    padding: 9px 14px;
+    font-size: 12.5px;
+    color: #94a3b8;
 }
-.kc-load-more-btn {
+.mb-app-search i { margin-right: 8px; }
+.mb-app-online {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: #f0fdf4;
+    border: 1px solid #bbf7d0;
+    color: #15803d;
+    font-size: 12.5px;
+    font-weight: 600;
+    padding: 7px 14px;
+    border-radius: 30px;
+}
+.mb-app-online b { font-variant-numeric: tabular-nums; }
+.mb-pulse {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #22c55e;
+    animation: mbPulse 1.8s infinite;
+}
+@keyframes mbPulse {
+    0%   { box-shadow: 0 0 0 0 rgba(34,197,94,.6); }
+    70%  { box-shadow: 0 0 0 8px rgba(34,197,94,0); }
+    100% { box-shadow: 0 0 0 0 rgba(34,197,94,0); }
+}
+.mb-app-title small {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--d-muted);
+}
+.mb-app-title h3 { font-family: var(--fh); font-size: 24px; font-weight: 800; margin: 2px 0; color: var(--d-ink); }
+.mb-app-title h3 span { color: var(--d-blue); }
+.mb-app-title p { font-size: 12.5px; color: var(--d-muted); margin: 0 0 18px; }
+
+/* Stat cards */
+.mb-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 14px; }
+.mb-stat,
+.mb-card {
+    background: #fff;
+    border: 1px solid var(--d-line);
+    border-radius: 14px;
+    min-width: 0;
+    opacity: 0;
+    transform: translateY(16px);
+    transition: opacity .6s ease, transform .7s var(--d-ease);
+}
+.mb-dash.is-in .mb-stat,
+.mb-dash.is-in .mb-card { opacity: 1; transform: none; }
+.mb-dash.is-in .mb-stat:nth-child(1) { transition-delay: .3s; }
+.mb-dash.is-in .mb-stat:nth-child(2) { transition-delay: .4s; }
+.mb-dash.is-in .mb-stat:nth-child(3) { transition-delay: .5s; }
+.mb-dash.is-in .mb-stat:nth-child(4) { transition-delay: .6s; }
+.mb-dash.is-in .mb-card { transition-delay: .7s; }
+
+.mb-stat { border-top: 3px solid var(--c); padding: 14px 16px; }
+.mb-stat-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--d-muted);
+}
+.mb-stat-top i {
+    width: 32px;
+    height: 32px;
+    border-radius: 9px;
+    display: grid;
+    place-items: center;
+    background: var(--c);
+    color: #fff;
+    font-size: 13px;
+}
+.mb-stat-val {
+    font-size: 22px;
+    font-weight: 800;
+    margin: 8px 0 4px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+.mb-stat-val b { font-weight: 800; transition: color .5s; }
+.mb-stat-val b.is-bump { color: var(--d-green); }
+.mb-stat-foot { font-size: 11.5px; color: var(--d-muted); }
+.mb-stat-foot.is-up { color: var(--d-green); font-weight: 600; }
+
+/* Content cards */
+.mb-row { display: grid; grid-template-columns: 1.6fr 1fr; gap: 14px; margin-bottom: 14px; }
+.mb-row-3 { grid-template-columns: repeat(3, 1fr); margin-bottom: 0; }
+.mb-card { padding: 16px 18px; }
+.mb-card-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 12px; }
+.mb-card-head h4 { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 700; margin: 0; color: var(--d-ink); }
+.mb-card-head h4 i { color: var(--d-blue); }
+.mb-card-head > span { font-size: 11.5px; color: var(--d-muted); }
+.mb-live {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: #dc2626 !important;
+    font-size: 10px !important;
+    font-weight: 800;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+.mb-live::before {
+    content: '';
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #ef4444;
+    animation: mbBlink 1.2s infinite;
+}
+@keyframes mbBlink { 50% { opacity: .25; } }
+
+/* Revenue chart */
+.mb-chart { width: 100%; height: auto; display: block; overflow: visible; }
+.mb-chart-grid line { stroke: var(--d-soft); stroke-width: 1; }
+.mb-chart-grid text { fill: #94a3b8; font-size: 10px; }
+.mb-chart-area { opacity: 0; transition: opacity 1s ease 1.2s; }
+.mb-chart-line {
+    fill: none;
+    stroke: var(--d-blue);
+    stroke-width: 3;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-dasharray: var(--len, 2000);
+    stroke-dashoffset: var(--len, 2000);
+    transition: stroke-dashoffset 1.8s cubic-bezier(.65,0,.35,1) .5s;
+}
+.mb-chart-dot { fill: #fff; stroke: var(--d-blue); stroke-width: 3; opacity: 0; transition: opacity .4s 2.2s; }
+.mb-chart-halo { fill: var(--d-sky); opacity: 0; transform-box: fill-box; transform-origin: center; }
+.mb-dash.is-in .mb-chart-line { stroke-dashoffset: 0; }
+.mb-dash.is-in .mb-chart-area,
+.mb-dash.is-in .mb-chart-dot { opacity: 1; }
+.mb-dash.is-in .mb-chart-halo { animation: mbHalo 2s ease-out 2.4s infinite; }
+@keyframes mbHalo {
+    0%   { opacity: .5; transform: scale(1); }
+    100% { opacity: 0;  transform: scale(3.2); }
+}
+.mb-chart-x { display: flex; justify-content: space-between; font-size: 10.5px; color: #94a3b8; margin-top: 6px; }
+
+/* Payments feed */
+.mb-feed { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.mb-feed li {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 10px;
+    border-radius: 10px;
+    background: #f8fafc;
+    border: 1px solid var(--d-soft);
+    transition: background .8s, border-color .8s;
+}
+.mb-feed li.is-new {
+    background: #f0fdf4;
+    border-color: #bbf7d0;
+    animation: mbFeedIn .6s var(--d-ease);
+}
+@keyframes mbFeedIn {
+    from { opacity: 0; transform: translateY(-12px) scale(.98); }
+    to   { opacity: 1; transform: none; }
+}
+.mb-feed-ico {
+    width: 32px;
+    height: 32px;
+    border-radius: 9px;
+    background: #dcfce7;
+    color: var(--d-green);
+    display: grid;
+    place-items: center;
+    font-size: 13px;
+    flex-shrink: 0;
+}
+.mb-feed-txt { flex: 1; min-width: 0; }
+.mb-feed-txt strong { display: block; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mb-feed-txt span { display: block; font-size: 11px; color: var(--d-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mb-feed-amt { font-size: 13px; font-weight: 800; color: var(--d-green); white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+/* Data usage ring */
+.mb-ring-wrap { position: relative; width: 150px; margin: 4px auto 10px; }
+.mb-ring { width: 100%; display: block; transform: rotate(-90deg); }
+.mb-ring circle { fill: none; stroke-width: 12; }
+.mb-ring-bg { stroke: var(--d-soft); }
+.mb-ring-fg {
+    stroke: var(--d-blue);
+    stroke-linecap: round;
+    stroke-dasharray: 314.16;
+    stroke-dashoffset: 314.16;
+    transition: stroke-dashoffset 1.8s cubic-bezier(.65,0,.35,1) .6s;
+}
+.mb-dash.is-in .mb-ring-fg { stroke-dashoffset: calc(314.16 * (1 - var(--p))); }
+.mb-ring-label { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; }
+.mb-ring-label b { font-size: 22px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.mb-ring-label small { font-size: 10.5px; color: var(--d-muted); }
+.mb-ring-legend { display: flex; justify-content: center; gap: 16px; font-size: 11.5px; color: var(--d-muted); }
+.mb-ring-legend i { color: var(--d-blue); margin-right: 3px; }
+.mb-ring-legend span + span i { color: var(--d-sky); }
+
+/* Customers by plan */
+.mb-plans { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.mb-plans li { display: grid; grid-template-columns: 1fr auto; gap: 5px 10px; font-size: 12px; color: #334155; }
+.mb-plans b { font-variant-numeric: tabular-nums; }
+.mb-hbar { grid-column: 1 / -1; height: 7px; border-radius: 6px; background: var(--d-soft); overflow: hidden; }
+.mb-hbar i {
+    display: block;
+    height: 100%;
+    width: var(--w);
+    border-radius: 6px;
+    background: linear-gradient(90deg, var(--d-sky), var(--d-blue));
+    transform: scaleX(0);
+    transform-origin: left;
+    transition: transform 1.2s var(--d-ease);
+}
+.mb-dash.is-in .mb-hbar i { transform: scaleX(1); }
+.mb-plans li:nth-child(1) .mb-hbar i { transition-delay: .9s; }
+.mb-plans li:nth-child(2) .mb-hbar i { transition-delay: 1s; }
+.mb-plans li:nth-child(3) .mb-hbar i { transition-delay: 1.1s; }
+.mb-plans li:nth-child(4) .mb-hbar i { transition-delay: 1.2s; }
+.mb-plans li:nth-child(5) .mb-hbar i { transition-delay: 1.3s; }
+
+/* At a glance */
+.mb-glance { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.mb-glance li { display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: 12px; border: 1px solid var(--d-soft); }
+.mb-glance-ico {
+    width: 36px;
+    height: 36px;
+    border-radius: 10px;
+    display: grid;
+    place-items: center;
+    background: var(--bg);
+    color: var(--fg);
+    font-size: 14px;
+    flex-shrink: 0;
+}
+.mb-glance small {
+    display: block;
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .8px;
+    text-transform: uppercase;
+    color: var(--d-muted);
+}
+.mb-glance strong { font-size: 15px; font-weight: 800; font-variant-numeric: tabular-nums; }
+
+/* Highlights under the frame */
+.mb-dash-points { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; margin-top: 44px; }
+.mb-point { display: flex; gap: 14px; align-items: flex-start; }
+.mb-point > i {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    background: var(--d-tint);
+    color: var(--d-blue);
+    display: grid;
+    place-items: center;
+    font-size: 17px;
+    flex-shrink: 0;
+}
+.mb-point h3 { font-family: var(--fh); font-size: 15px; font-weight: 800; color: var(--d-navy); margin: 2px 0 4px; }
+.mb-point p { font-size: 13.5px; color: var(--d-muted); line-height: 1.6; margin: 0; }
+
+@media (max-width: 1199px) {
+    .mb-app-body { grid-template-columns: 1fr; }
+    .mb-app-side { display: none; }
+}
+@media (max-width: 991px) {
+    .mb-dash { padding: 64px 0 72px; }
+    .mb-stats { grid-template-columns: repeat(2, 1fr); }
+    .mb-row, .mb-row-3 { grid-template-columns: 1fr; }
+    .mb-dash-points { grid-template-columns: 1fr; gap: 18px; }
+}
+@media (max-width: 576px) {
+    .mb-app-main { padding: 14px; }
+    .mb-app-url { display: none; }
+    .mb-app-bar { justify-content: space-between; }
+    .mb-stats { gap: 10px; }
+    .mb-stat { padding: 12px; }
+    .mb-stat-val { font-size: 17px; }
+    .mb-stat-top { font-size: 9.5px; }
+    .mb-stat-top i { width: 28px; height: 28px; font-size: 12px; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .mb-dash *, .mb-dash *::before { transition: none !important; animation: none !important; }
+}
+
+/* ═══════════════════════════════════════════════════
+   3. PRICING — flip cards (hover on desktop, tap on touch)
+═══════════════════════════════════════════════════ */
+.mb-price {
+    --p-navy:  #071d3a;
+    --p-navy2: #0c3b6e;
+    --p-blue:  var(--bl-primary, #0284c7);
+    --p-sky:   var(--bl-accent, #38bdf8);
+    --p-tint:  var(--bl-tint, #e0f2fe);
+    --p-muted: #64748b;
+    --p-line:  #e2e8f0;
+    --p-ease:  cubic-bezier(.16,1,.3,1);
+    padding: 88px 0 96px;
+    background: #fff;
+    scroll-margin-top: 70px;   /* clear the sticky nav when jumped to via #pricing */
+}
+.mb-price-head { max-width: 620px; margin: 0 0 40px; }
+.mb-price-eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--p-tint);
+    color: var(--p-blue);
+    font-family: var(--fh);
+    font-size: 10.5px;
+    font-weight: 800;
+    letter-spacing: 2.5px;
+    text-transform: uppercase;
+    padding: 6px 16px;
+    border-radius: 30px;
+}
+.mb-price-title {
+    font-family: var(--fh);
+    font-size: clamp(1.5rem, 2.4vw, 2rem);
+    font-weight: 800;
+    line-height: 1.2;
+    letter-spacing: -.02em;
+    color: var(--p-navy);
+    margin: 16px 0 12px;
+}
+.mb-price-title em { font-style: normal; color: var(--p-blue); }
+.mb-price-sub { color: var(--p-muted); font-size: 15px; line-height: 1.7; margin: 0; }
+
+/* Grid + reveal */
+.mb-price-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
+.mb-flip {
+    perspective: 1200px;
+    height: 360px;
+    cursor: pointer;
+    outline: none;
+    opacity: 0;
+    transform: translateY(28px);
+    transition: opacity .6s ease, transform .8s var(--p-ease);
+}
+.mb-price.is-in .mb-flip { opacity: 1; transform: none; }
+.mb-price.is-in .mb-flip:nth-child(2) { transition-delay: .1s; }
+.mb-price.is-in .mb-flip:nth-child(3) { transition-delay: .2s; }
+.mb-price.is-in .mb-flip:nth-child(4) { transition-delay: .3s; }
+
+.mb-flip-inner {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    transform-style: preserve-3d;
+    transition: transform .8s var(--p-ease);
+}
+.mb-flip.is-flipped .mb-flip-inner { transform: rotateY(180deg); }
+@media (hover: hover) {
+    .mb-flip:hover .mb-flip-inner { transform: rotateY(180deg); }
+}
+/* one-time hint that the cards turn over */
+.mb-flip.is-peek .mb-flip-inner { animation: mbPeek 1.1s var(--p-ease); }
+@keyframes mbPeek {
+    40% { transform: rotateY(-24deg); }
+    100% { transform: rotateY(0); }
+}
+.mb-flip:focus-visible .mb-flip-face { box-shadow: 0 0 0 3px var(--p-sky), 0 18px 40px -18px rgba(7,29,58,.35); }
+
+.mb-flip-face {
+    position: absolute;
+    inset: 0;
+    -webkit-backface-visibility: hidden;
+            backface-visibility: hidden;
+    border-radius: 20px;
+    padding: 26px 24px 22px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+/* Front */
+.mb-flip-front {
+    background: #fff;
+    border: 1px solid var(--p-line);
+    box-shadow: 0 18px 40px -22px rgba(7,29,58,.3);
+}
+.mb-flip-front::after {                    /* soft corner glow */
+    content: '';
+    position: absolute;
+    right: -60px;
+    top: -60px;
+    width: 180px;
+    height: 180px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(56,189,248,.18), transparent 70%);
+}
+.mb-flip-ico {
+    width: 48px;
+    height: 48px;
+    border-radius: 14px;
+    display: grid;
+    place-items: center;
+    background: var(--p-tint);
+    color: var(--p-blue);
+    font-size: 19px;
+    margin-bottom: 22px;
+}
+.mb-flip-label {
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 1.6px;
+    text-transform: uppercase;
+    color: var(--p-muted);
+    margin-bottom: 6px;
+}
+.mb-flip-big {
+    font-family: var(--fh);
+    font-size: 38px;
+    font-weight: 900;
+    line-height: 1.05;
+    letter-spacing: -.02em;
+    color: var(--p-navy);
+}
+.mb-flip-big small { font-size: 18px; font-weight: 800; color: var(--p-blue); margin-right: 4px; vertical-align: 12px; }
+.mb-flip-unit { font-size: 13.5px; font-weight: 700; color: var(--p-blue); margin-top: 6px; }
+.mb-flip-cap { font-size: 13.5px; line-height: 1.6; color: var(--p-muted); margin: 16px 0 0; }
+.mb-flip-hint {
+    margin-top: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 11.5px;
+    font-weight: 700;
+    color: var(--p-blue);
+}
+.mb-flip-hint i { transition: transform .5s var(--p-ease); }
+.mb-flip:hover .mb-flip-hint i { transform: rotate(180deg); }
+
+/* Featured (minimum) card front */
+.mb-flip.is-featured .mb-flip-front {
+    background: linear-gradient(150deg, var(--p-navy) 0%, var(--p-navy2) 100%);
+    border-color: transparent;
+    color: #fff;
+}
+.mb-flip.is-featured .mb-flip-ico { background: rgba(56,189,248,.16); color: var(--p-sky); }
+.mb-flip.is-featured .mb-flip-label { color: rgba(255,255,255,.6); }
+.mb-flip.is-featured .mb-flip-big { color: #fff; }
+.mb-flip.is-featured .mb-flip-big small,
+.mb-flip.is-featured .mb-flip-unit,
+.mb-flip.is-featured .mb-flip-hint { color: var(--p-sky); }
+.mb-flip.is-featured .mb-flip-cap { color: rgba(255,255,255,.72); }
+.mb-flip-badge {
+    position: absolute;
+    top: 22px;
+    right: 20px;
+    z-index: 1;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--p-navy);
+    background: var(--p-sky);
+    padding: 4px 10px;
+    border-radius: 20px;
+}
+
+/* Back */
+.mb-flip-back {
+    transform: rotateY(180deg);
+    background:
+        radial-gradient(260px 200px at 100% 0%, rgba(56,189,248,.3), transparent 70%),
+        linear-gradient(150deg, var(--p-blue) 0%, var(--p-navy2) 100%);
+    color: #fff;
+}
+.mb-flip-back h4 { font-family: var(--fh); font-size: 17px; font-weight: 800; color: #fff; margin: 0 0 14px; }
+.mb-flip-back ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 9px; }
+.mb-flip-back li { display: flex; gap: 10px; font-size: 13px; line-height: 1.5; color: rgba(255,255,255,.88); }
+.mb-flip-back li i { color: var(--p-sky); font-size: 12px; margin-top: 4px; flex-shrink: 0; }
+.mb-flip-eg {
+    margin-top: auto;
+    background: rgba(255,255,255,.1);
+    border: 1px solid rgba(255,255,255,.16);
+    border-radius: 12px;
+    padding: 11px 13px;
+    font-size: 12.5px;
+    line-height: 1.55;
+    color: rgba(255,255,255,.9);
+}
+.mb-flip-eg b { color: #fff; }
+.mb-flip-eg small {
+    display: block;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 1.2px;
+    text-transform: uppercase;
+    color: var(--p-sky);
+    margin-bottom: 3px;
+}
+
+/* Formula + CTA */
+.mb-price-foot {
+    margin-top: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 20px;
+    flex-wrap: wrap;
+    background: #f8fafc;
+    border: 1px solid var(--p-line);
+    border-radius: 18px;
+    padding: 20px 24px;
+}
+.mb-formula { font-size: 14px; color: #334155; line-height: 1.7; }
+.mb-formula small {
+    display: block;
+    font-size: 10.5px;
+    font-weight: 800;
+    letter-spacing: 1.4px;
+    text-transform: uppercase;
+    color: var(--p-muted);
+}
+.mb-formula b { color: var(--p-navy); }
+.mb-formula .mb-op { color: var(--p-blue); font-weight: 800; margin: 0 4px; }
+.mb-price-cta { display: flex; gap: 10px; flex-wrap: wrap; }
+.mb-price-cta a {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 24px;
+    border-radius: 50px;
+    font-family: var(--fh);
+    font-size: 13.5px;
+    font-weight: 800;
+    text-decoration: none;
+    transition: background .2s, color .2s, transform .2s;
+}
+.mb-price-cta .is-main { background: var(--p-blue); color: #fff; }
+.mb-price-cta .is-main:hover { background: #0369a1; color: #fff; transform: translateY(-2px); }
+.mb-price-cta .is-ghost { border: 1.5px solid var(--p-blue); color: var(--p-blue); }
+.mb-price-cta .is-ghost:hover { background: var(--p-tint); color: var(--p-blue); }
+
+@media (max-width: 1199px) {
+    .mb-price-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 991px) {
+    .mb-price { padding: 64px 0 72px; }
+}
+@media (max-width: 576px) {
+    .mb-price-grid { grid-template-columns: 1fr; }
+    .mb-flip { height: 290px; }
+    .mb-price-foot { padding: 18px; }
+    .mb-price-cta, .mb-price-cta a { width: 100%; justify-content: center; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .mb-flip, .mb-flip-inner { transition: none !important; animation: none !important; }
+}
+
+/* ═══════════════════════════════════════════════════
+   2B. FEATURES — 3 illustrated cards + icon grid (dark)
+═══════════════════════════════════════════════════ */
+.mb-feat {
+    --f-navy:  #071d3a;
+    --f-navy2: #0c3b6e;
+    --f-blue:  var(--bl-primary, #0284c7);
+    --f-sky:   var(--bl-accent, #38bdf8);
+    --f-amber: #f5b71a;
+    --f-green: #22c55e;
+    --f-card:  rgba(255,255,255,.045);
+    --f-line:  rgba(255,255,255,.1);
+    --f-text:  rgba(255,255,255,.68);
+    --f-ease:  cubic-bezier(.16,1,.3,1);
+    position: relative;
+    overflow: hidden;
+    padding: 88px 0 96px;
+    color: #fff;
+    scroll-margin-top: 70px;
+    background:
+        radial-gradient(700px 420px at 100% 0%, rgba(56,189,248,.18), transparent 65%),
+        radial-gradient(600px 420px at 0% 100%, rgba(2,132,199,.25), transparent 65%),
+        linear-gradient(160deg, var(--f-navy) 0%, var(--f-navy2) 100%);
+}
+.mb-feat::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image:
+        linear-gradient(rgba(255,255,255,.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.04) 1px, transparent 1px);
+    background-size: 44px 44px;
+    -webkit-mask-image: radial-gradient(ellipse at 20% 0%, #000 10%, transparent 60%);
+            mask-image: radial-gradient(ellipse at 20% 0%, #000 10%, transparent 60%);
+    pointer-events: none;
+}
+.mb-feat .container { position: relative; }
+
+.mb-feat-head { max-width: 620px; margin: 0 0 40px; }
+.mb-feat-eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(56,189,248,.14);
+    border: 1px solid rgba(56,189,248,.35);
+    color: #7dd3fc;
+    font-family: var(--fh);
+    font-size: 10.5px;
+    font-weight: 800;
+    letter-spacing: 2.5px;
+    text-transform: uppercase;
+    padding: 6px 16px;
+    border-radius: 30px;
+}
+.mb-feat-title {
+    font-family: var(--fh);
+    font-size: clamp(1.5rem, 2.4vw, 2rem);
+    font-weight: 800;
+    line-height: 1.2;
+    letter-spacing: -.02em;
+    color: #fff;
+    margin: 16px 0 12px;
+}
+.mb-feat-title em {
+    font-style: normal;
+    background: linear-gradient(90deg, #7dd3fc, var(--f-sky));
+    -webkit-background-clip: text;
+            background-clip: text;
+    color: transparent;
+}
+.mb-feat-sub { color: var(--f-text); font-size: 15px; line-height: 1.7; margin: 0; }
+
+/* Shared card + reveal */
+.mb-fcard {
+    background: var(--f-card);
+    border: 1px solid var(--f-line);
+    border-radius: 20px;
+    position: relative;
+    overflow: hidden;
+    opacity: 0;
+    transform: translateY(24px);
+    transition: opacity .6s ease, transform .8s var(--f-ease), border-color .3s, background .3s;
+}
+.mb-feat.is-in .mb-fcard { opacity: 1; transform: none; transition-delay: calc(var(--i, 0) * 70ms); }
+.mb-fcard:hover { border-color: rgba(56,189,248,.45); background: rgba(255,255,255,.07); }
+.mb-fcard h3 { font-family: var(--fh); font-size: 16px; font-weight: 800; color: #fff; margin: 0 0 6px; }
+.mb-fcard p { font-size: 13.5px; line-height: 1.65; color: var(--f-text); margin: 0; }
+
+/* Big illustrated cards */
+.mb-feat-big { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 20px; }
+.mb-fvis {
+    position: relative;
+    height: 200px;
+    display: grid;
+    place-items: center;
+    border-bottom: 1px solid var(--f-line);
+    background:
+        radial-gradient(240px 140px at 50% 100%, rgba(56,189,248,.16), transparent 70%),
+        rgba(255,255,255,.02);
+}
+.mb-fbody { padding: 22px 24px 24px; }
+.mb-ftags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 14px; }
+.mb-ftags span {
+    font-size: 11px;
+    font-weight: 700;
+    color: #7dd3fc;
+    background: rgba(56,189,248,.1);
+    border: 1px solid rgba(56,189,248,.22);
+    padding: 3px 10px;
+    border-radius: 20px;
+}
+
+/* Visual 1: voucher stack */
+.mb-vch { position: relative; width: 250px; height: 132px; }
+.mb-vch-card {
+    position: absolute;
+    inset: 0;
+    border-radius: 14px;
+    background: linear-gradient(135deg, #0ea5e9, var(--f-blue));
+    box-shadow: 0 18px 40px rgba(0,0,0,.35);
+    transition: transform 1s var(--f-ease) .3s;
+}
+.mb-vch-card.is-back { background: #0c4a6e; opacity: .8; }
+.mb-vch-card.is-mid  { background: #0369a1; opacity: .9; }
+.mb-feat.is-in .mb-vch-card.is-back { transform: rotate(-11deg) translate(-22px, 6px); }
+.mb-feat.is-in .mb-vch-card.is-mid  { transform: rotate(-5deg) translate(-10px, 2px); }
+.mb-vch-card.is-front { padding: 14px 16px; display: flex; flex-direction: column; color: #fff; }
+.mb-vch-card.is-front::after {                /* shine sweep */
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    background: linear-gradient(110deg, transparent 35%, rgba(255,255,255,.28) 50%, transparent 65%);
+    background-size: 250% 100%;
+    background-position: 120% 0;
+}
+.mb-feat.is-in .mb-vch-card.is-front::after { animation: mbShine 3.5s ease-in-out 1.2s infinite; }
+@keyframes mbShine { 0% { background-position: 120% 0; } 45%, 100% { background-position: -40% 0; } }
+.mb-vch-top { display: flex; justify-content: space-between; align-items: center; font-size: 10px; font-weight: 800; letter-spacing: 1.2px; text-transform: uppercase; color: rgba(255,255,255,.75); }
+.mb-vch-top b { font-size: 13px; letter-spacing: 0; color: #fff; background: rgba(7,29,58,.35); padding: 2px 8px; border-radius: 6px; }
+.mb-vch-code {
+    font-family: ui-monospace, 'SFMono-Regular', Consolas, monospace;
+    font-size: 21px;
+    font-weight: 800;
+    letter-spacing: 2px;
+    margin: auto 0;
+    padding: 6px 0;
+    border-top: 1.5px dashed rgba(255,255,255,.35);
+    border-bottom: 1.5px dashed rgba(255,255,255,.35);
+    text-align: center;
+}
+.mb-vch-meta { display: flex; justify-content: space-between; font-size: 10.5px; font-weight: 600; color: rgba(255,255,255,.85); }
+.mb-vch-meta i { margin-right: 4px; opacity: .8; }
+
+/* Visual 2: FUP — fill to cap, then throttle */
+.mb-fup { width: 260px; }
+.mb-fup-speed {
+    position: relative;
+    height: 54px;
+    margin-bottom: 16px;
+    text-align: center;
+}
+.mb-fup-speed span {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    gap: 6px;
+    font-family: var(--fh);
+    font-size: 40px;
+    font-weight: 900;
+    line-height: 54px;
+}
+.mb-fup-speed small { font-size: 14px; font-weight: 700; color: var(--f-text); }
+.mb-fup-fast { color: #fff; }
+.mb-fup-slow { color: var(--f-amber); opacity: 0; }
+.mb-fup-bar { position: relative; height: 10px; border-radius: 6px; background: rgba(255,255,255,.1); overflow: visible; }
+.mb-fup-fill { height: 100%; width: 0; border-radius: 6px; background: var(--f-sky); }
+.mb-fup-cap {
+    position: absolute;
+    right: 0;
+    top: -5px;
+    bottom: -5px;
+    width: 2px;
+    background: var(--f-amber);
+    border-radius: 2px;
+}
+.mb-fup-legend { display: flex; justify-content: space-between; font-size: 11px; color: var(--f-text); margin-top: 10px; }
+.mb-fup-legend b { color: var(--f-amber); font-weight: 700; }
+.mb-feat.is-in .mb-fup-fill { animation: mbFupFill 6s ease-in-out .6s infinite; }
+.mb-feat.is-in .mb-fup-fast { animation: mbFupFast 6s ease-in-out .6s infinite; }
+.mb-feat.is-in .mb-fup-slow { animation: mbFupSlow 6s ease-in-out .6s infinite; }
+@keyframes mbFupFill {
+    0%       { width: 0;    background: var(--f-sky); }
+    52%      { width: 100%; background: var(--f-sky); }
+    58%, 90% { width: 100%; background: var(--f-amber); }
+    100%     { width: 0;    background: var(--f-sky); }
+}
+@keyframes mbFupFast { 0%, 52% { opacity: 1; transform: none; } 58%, 92% { opacity: 0; transform: translateY(-8px); } 100% { opacity: 1; transform: none; } }
+@keyframes mbFupSlow { 0%, 52% { opacity: 0; transform: translateY(8px); } 58%, 92% { opacity: 1; transform: none; } 100% { opacity: 0; transform: translateY(8px); } }
+
+/* Visual 3: wallet */
+.mb-wal { width: 260px; }
+.mb-wal-bal {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: linear-gradient(135deg, rgba(56,189,248,.22), rgba(2,132,199,.12));
+    border: 1px solid rgba(56,189,248,.3);
+    border-radius: 14px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+}
+.mb-wal-bal small { display: block; font-size: 10px; font-weight: 800; letter-spacing: 1.2px; text-transform: uppercase; color: var(--f-text); }
+.mb-wal-bal b { font-family: var(--fh); font-size: 22px; font-weight: 900; }
+.mb-wal-auto { display: inline-flex; align-items: center; gap: 6px; font-size: 10.5px; font-weight: 700; color: #86efac; }
+.mb-wal-auto i {                              /* toggle switch */
+    width: 26px;
+    height: 15px;
+    border-radius: 10px;
+    background: var(--f-green);
+    position: relative;
+}
+.mb-wal-auto i::after { content: ''; position: absolute; top: 2px; right: 2px; width: 11px; height: 11px; border-radius: 50%; background: #fff; }
+.mb-wal ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.mb-wal li {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    font-size: 11.5px;
+    color: rgba(255,255,255,.85);
+    background: rgba(255,255,255,.05);
+    border: 1px solid var(--f-line);
+    border-radius: 10px;
+    padding: 7px 10px;
+    opacity: 0;
+    transform: translateX(-12px);
+    transition: opacity .5s ease, transform .6s var(--f-ease);
+}
+.mb-feat.is-in .mb-wal li { opacity: 1; transform: none; }
+.mb-feat.is-in .mb-wal li:nth-child(1) { transition-delay: .7s; }
+.mb-feat.is-in .mb-wal li:nth-child(2) { transition-delay: 1s; }
+.mb-wal li i { width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; font-size: 10px; flex-shrink: 0; }
+.mb-wal li .is-plus  { background: rgba(34,197,94,.18); color: #86efac; }
+.mb-wal li .is-minus { background: rgba(56,189,248,.18); color: #7dd3fc; }
+.mb-wal li b { margin-left: auto; font-variant-numeric: tabular-nums; }
+.mb-wal li b.is-plus { color: #86efac; background: none; }
+
+/* Icon grid */
+.mb-feat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
+.mb-feat-grid .mb-fcard { padding: 22px 22px 24px; }
+.mb-fico {
+    width: 46px;
+    height: 46px;
+    border-radius: 13px;
+    display: grid;
+    place-items: center;
+    font-size: 18px;
+    color: #fff;
+    background: linear-gradient(135deg, var(--f-sky), var(--f-blue));
+    box-shadow: 0 10px 24px -8px rgba(56,189,248,.55);
+    margin-bottom: 16px;
+    transition: transform .4s var(--f-ease);
+}
+.mb-fcard:hover .mb-fico { transform: translateY(-3px) rotate(-6deg); }
+.mb-fico.is-green { background: linear-gradient(135deg, #4ade80, #16a34a); box-shadow: 0 10px 24px -8px rgba(34,197,94,.5); }
+.mb-fico.is-amber { background: linear-gradient(135deg, #fcd34d, #f59e0b); box-shadow: 0 10px 24px -8px rgba(245,158,11,.5); }
+
+@media (max-width: 1199px) {
+    .mb-feat-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 991px) {
+    .mb-feat { padding: 64px 0 72px; }
+    .mb-feat-big { grid-template-columns: 1fr; }
+    .mb-fvis { height: 190px; }
+}
+@media (max-width: 576px) {
+    .mb-feat-grid { grid-template-columns: 1fr; gap: 12px; }
+    .mb-feat-grid .mb-fcard {             /* compact: icon beside text */
+        display: grid;
+        grid-template-columns: 46px 1fr;
+        column-gap: 14px;
+        padding: 16px 18px;
+    }
+    .mb-feat-grid .mb-fico { grid-row: span 2; margin-bottom: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .mb-feat *, .mb-feat *::after { transition: none !important; animation: none !important; }
+    .mb-fup-fill { width: 70%; }
+}
+
+/* ═══════════════════════════════════════════════════
+   2C. EARN · CONNECT · GROW — animated 2D drawings
+═══════════════════════════════════════════════════ */
+.mb-earn {
+    --e-navy:  #071d3a;
+    --e-navy2: #0c3b6e;
+    --e-blue:  var(--bl-primary, #0284c7);
+    --e-sky:   var(--bl-accent, #38bdf8);
+    --e-tint:  var(--bl-tint, #e0f2fe);
+    --e-muted: #64748b;
+    --e-line:  #e2e8f0;
+    --e-ease:  cubic-bezier(.16,1,.3,1);
+    padding: 88px 0 96px;
+    background: linear-gradient(180deg, #f0f9ff 0%, #fff 100%);
+}
+.mb-earn-head { max-width: 620px; margin: 0 0 40px; }
+.mb-earn-eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--e-tint);
+    color: var(--e-blue);
+    font-family: var(--fh);
+    font-size: 10.5px;
+    font-weight: 800;
+    letter-spacing: 2.5px;
+    text-transform: uppercase;
+    padding: 6px 16px;
+    border-radius: 30px;
+}
+.mb-earn-title {
+    font-family: var(--fh);
+    font-size: clamp(1.5rem, 2.4vw, 2rem);
+    font-weight: 800;
+    line-height: 1.2;
+    letter-spacing: -.02em;
+    color: var(--e-navy);
+    margin: 16px 0 12px;
+}
+.mb-earn-title em { font-style: normal; color: var(--e-blue); }
+.mb-earn-sub { color: var(--e-muted); font-size: 15px; line-height: 1.7; margin: 0; }
+
+.mb-earn-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+.mb-ecard {
+    background: #fff;
+    border: 1px solid var(--e-line);
+    border-radius: 20px;
+    overflow: hidden;
+    box-shadow: 0 18px 40px -26px rgba(7,29,58,.35);
+    opacity: 0;
+    transform: translateY(24px);
+    transition: opacity .6s ease, transform .8s var(--e-ease), box-shadow .3s;
+}
+.mb-earn.is-in .mb-ecard { opacity: 1; transform: none; }
+.mb-earn.is-in .mb-ecard:nth-child(2) { transition-delay: .12s; }
+.mb-earn.is-in .mb-ecard:nth-child(3) { transition-delay: .24s; }
+.mb-ecard:hover { box-shadow: 0 26px 50px -24px rgba(2,132,199,.4); }
+
+.mb-evis {
+    position: relative;
+    background:
+        radial-gradient(260px 160px at 50% 100%, rgba(56,189,248,.18), transparent 70%),
+        linear-gradient(180deg, #f8fbff, #eef7fe);
+    border-bottom: 1px solid var(--e-line);
+}
+.mb-evis svg { display: block; width: 100%; height: auto; }
+.mb-estep {
+    position: absolute;
+    top: 14px;
+    left: 16px;
+    font-family: var(--fh);
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 1px;
+    color: var(--e-blue);
+    background: #fff;
+    border: 1px solid var(--e-line);
+    padding: 3px 10px;
+    border-radius: 20px;
+}
+.mb-ebody { padding: 22px 24px 24px; }
+.mb-ebody h3 { font-family: var(--fh); font-size: 18px; font-weight: 800; color: var(--e-navy); margin: 0 0 8px; }
+.mb-ebody p { font-size: 13.5px; line-height: 1.65; color: var(--e-muted); margin: 0; }
+.mb-ebody ul { list-style: none; margin: 14px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.mb-ebody li { font-size: 13px; color: #334155; display: flex; gap: 8px; }
+.mb-ebody li i { color: var(--e-blue); font-size: 12px; margin-top: 3px; }
+
+/* ── 1. Earn: coins (driven by JS) ── */
+.mb-coin { opacity: 0; }
+.mb-coin-plus { font: 800 14px var(--fh); fill: #16a34a; opacity: 0; }
+.mb-phone-amt { font: 800 15px var(--fh); fill: #fff; }
+.mb-phone-sm  { font: 700 7.5px system-ui, sans-serif; letter-spacing: 1px; fill: #7dd3fc; }
+.mb-phone-lbl { font: 600 8px system-ui, sans-serif; fill: rgba(255,255,255,.65); }
+
+/* ── 2. Connect: cable → plug → link (6s loop) ── */
+.mb-cable,
+.mb-flow { fill: none; stroke-linecap: round; }
+.mb-cable { stroke: #0c3b6e; stroke-width: 5; stroke-dasharray: 100; stroke-dashoffset: 100; }
+.mb-flow  { stroke: var(--e-sky); stroke-width: 2.5; stroke-dasharray: 3 9; opacity: 0; }
+.mb-plug  { transform: translateX(-30px); opacity: 0; }
+.mb-led-main { fill: #475569; }
+.mb-win { fill: #94a3b8; }
+.mb-conn-badge { opacity: 0; transform-box: fill-box; transform-origin: center; }
+.mb-led-sm { fill: #22c55e; }
+.mb-led-sm.is-b { animation: mbBlinkSm 1.1s steps(2) infinite; }
+.mb-led-sm.is-c { animation: mbBlinkSm .8s steps(2) .3s infinite; }
+@keyframes mbBlinkSm { 50% { opacity: .2; } }
+.mb-earn.is-in .mb-cable      { animation: mbCable 6s infinite; }
+.mb-earn.is-in .mb-plug       { animation: mbPlug 6s var(--e-ease) infinite; }
+.mb-earn.is-in .mb-led-main   { animation: mbLed 6s infinite; }
+.mb-earn.is-in .mb-win        { animation: mbWin 6s infinite; }
+.mb-earn.is-in .mb-conn-badge { animation: mbBadge 6s var(--e-ease) infinite; }
+.mb-earn.is-in .mb-flow       { animation: mbFlow .9s linear infinite, mbFlowShow 6s infinite; }
+@keyframes mbCable { 0% { stroke-dashoffset: 100; opacity: 1; } 25%, 92% { stroke-dashoffset: 0; opacity: 1; } 97% { stroke-dashoffset: 0; opacity: 0; } 100% { stroke-dashoffset: 100; opacity: 0; } }
+@keyframes mbPlug  { 0%, 24% { transform: translateX(-30px); opacity: 0; } 28% { transform: translateX(-30px); opacity: 1; } 36%, 92% { transform: none; opacity: 1; } 97%, 100% { transform: none; opacity: 0; } }
+@keyframes mbLed   { 0%, 37% { fill: #475569; } 39%, 92% { fill: #22c55e; } 100% { fill: #475569; } }
+@keyframes mbWin   { 0%, 40% { fill: #94a3b8; } 44%, 92% { fill: #fbbf24; } 100% { fill: #94a3b8; } }
+@keyframes mbBadge { 0%, 40% { opacity: 0; transform: translateY(6px) scale(.85); } 46%, 90% { opacity: 1; transform: none; } 96%, 100% { opacity: 0; transform: none; } }
+@keyframes mbFlow  { to { stroke-dashoffset: -12; } }
+@keyframes mbFlowShow { 0%, 40% { opacity: 0; } 46%, 90% { opacity: 1; } 95%, 100% { opacity: 0; } }
+
+/* ── 3. Grow: bars + trend arrow (6s loop) ── */
+.mb-gbar { transform-box: fill-box; transform-origin: 50% 100%; transform: scaleY(0); }
+.mb-gline { fill: none; stroke: #16a34a; stroke-width: 3.5; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 100; stroke-dashoffset: 100; }
+.mb-ghead, .mb-gbadge { opacity: 0; transform-box: fill-box; transform-origin: center; }
+.mb-gdot { fill: #fff; stroke: #16a34a; stroke-width: 2.5; opacity: 0; }
+.mb-earn.is-in .mb-gbar { animation: mbBar 6s var(--e-ease) infinite; animation-delay: calc(var(--i) * .15s); }
+.mb-earn.is-in .mb-gline { animation: mbGLine 6s infinite; }
+.mb-earn.is-in .mb-gdot { animation: mbGDot 6s infinite; }
+.mb-earn.is-in .mb-ghead { animation: mbGHead 6s infinite; }
+.mb-earn.is-in .mb-gbadge { animation: mbBadge 6s var(--e-ease) infinite; }
+@keyframes mbBar   { 0% { transform: scaleY(0); } 18%, 90% { transform: scaleY(1); } 98%, 100% { transform: scaleY(0); } }
+@keyframes mbGLine { 0%, 22% { stroke-dashoffset: 100; opacity: 1; } 42%, 90% { stroke-dashoffset: 0; opacity: 1; } 96%, 100% { stroke-dashoffset: 0; opacity: 0; } }
+@keyframes mbGDot  { 0%, 40% { opacity: 0; } 44%, 90% { opacity: 1; } 96%, 100% { opacity: 0; } }
+@keyframes mbGHead { 0%, 40% { opacity: 0; transform: scale(.4); } 45%, 90% { opacity: 1; transform: none; } 96%, 100% { opacity: 0; } }
+
+@media (max-width: 991px) {
+    .mb-earn { padding: 64px 0 72px; }
+    .mb-earn-grid { grid-template-columns: 1fr; max-width: 520px; }
+}
+/* Reduced motion: show every drawing in its finished state */
+@media (prefers-reduced-motion: reduce) {
+    .mb-earn *, .mb-ecard { animation: none !important; transition: none !important; }
+    .mb-ecard { opacity: 1; transform: none; }
+    .mb-coin { opacity: 1; }
+    .mb-cable, .mb-gline { stroke-dashoffset: 0; }
+    .mb-plug, .mb-gbar { transform: none; opacity: 1; }
+    .mb-led-main { fill: #22c55e; }
+    .mb-win { fill: #fbbf24; }
+    .mb-conn-badge, .mb-ghead, .mb-gbadge, .mb-gdot { opacity: 1; }
+}
+
+/* ═══════════════════════════════════════════════════
+   3B. JOIN CTA — "Join and start selling" panel
+═══════════════════════════════════════════════════ */
+.mb-cta {
+    --c-navy:  #071d3a;
+    --c-navy2: #0c3b6e;
+    --c-blue:  var(--bl-primary, #0284c7);
+    --c-sky:   var(--bl-accent, #38bdf8);
+    --c-text:  rgba(255,255,255,.72);
+    --c-ease:  cubic-bezier(.16,1,.3,1);
+    padding: 24px 0 96px;
+    background: #fff;
+    scroll-margin-top: 70px;
+}
+.mb-cta-panel {
+    position: relative;
+    overflow: hidden;
+    isolation: isolate;
+    display: grid;
+    grid-template-columns: 1.15fr 1fr;
+    gap: 48px;
+    align-items: center;
+    padding: 56px;
+    border-radius: 28px;
+    color: #fff;
+    background: linear-gradient(135deg, var(--c-navy) 0%, var(--c-navy2) 100%);
+    box-shadow: 0 40px 80px -40px rgba(7,29,58,.6);
+}
+.mb-cta-panel::before {                       /* faint grid */
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    background-image:
+        linear-gradient(rgba(255,255,255,.05) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.05) 1px, transparent 1px);
+    background-size: 40px 40px;
+    -webkit-mask-image: radial-gradient(ellipse at 80% 50%, #000 10%, transparent 65%);
+            mask-image: radial-gradient(ellipse at 80% 50%, #000 10%, transparent 65%);
+}
+.mb-cta-glow {                                 /* two drifting light blobs */
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+}
+.mb-cta-glow::before,
+.mb-cta-glow::after {
+    content: '';
+    position: absolute;
+    width: 420px;
+    height: 420px;
+    border-radius: 50%;
+    filter: blur(60px);
+    opacity: .55;
+}
+.mb-cta-glow::before { background: #0284c7; top: -180px; right: -80px; animation: mbDrift 14s ease-in-out infinite alternate; }
+.mb-cta-glow::after  { background: #38bdf8; bottom: -220px; left: 25%; opacity: .3; animation: mbDrift 18s ease-in-out infinite alternate-reverse; }
+@keyframes mbDrift {
+    0%   { transform: translate(0, 0) scale(1); }
+    100% { transform: translate(-60px, 40px) scale(1.15); }
+}
+
+.mb-cta-eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(56,189,248,.14);
+    border: 1px solid rgba(56,189,248,.35);
+    color: #7dd3fc;
+    font-family: var(--fh);
+    font-size: 10.5px;
+    font-weight: 800;
+    letter-spacing: 2.5px;
+    text-transform: uppercase;
+    padding: 6px 16px;
+    border-radius: 30px;
+}
+.mb-cta-title {
+    font-family: var(--fh);
+    font-size: clamp(1.6rem, 2.8vw, 2.4rem);
+    font-weight: 800;
+    line-height: 1.15;
+    letter-spacing: -.02em;
+    color: #fff;
+    margin: 16px 0 14px;
+    text-wrap: balance;
+}
+.mb-cta-title em {
+    font-style: normal;
+    background: linear-gradient(90deg, #7dd3fc, var(--c-sky));
+    -webkit-background-clip: text;
+            background-clip: text;
+    color: transparent;
+}
+.mb-cta-sub { color: var(--c-text); font-size: 15px; line-height: 1.7; margin: 0 0 26px; max-width: 480px; }
+.mb-cta-btns { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 26px; }
+.mb-cta-main,
+.mb-cta-ghost {
     display: inline-flex;
     align-items: center;
     gap: 9px;
-    padding: 13px 40px;
-    background: var(--white);
-    color: var(--navy);
-    border: 2px solid var(--navy);
+    padding: 14px 28px;
     border-radius: 50px;
     font-family: var(--fh);
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 800;
-    cursor: pointer;
-    transition: all .22s;
-    letter-spacing: .5px;
-    box-shadow: 0 4px 18px rgba(5,46,100,.10);
+    text-decoration: none;
+    transition: background .2s, color .2s, border-color .2s, transform .2s, box-shadow .2s;
 }
-.kc-load-more-btn i {
-    font-size: 11px;
-    transition: transform .22s;
+.mb-cta-main {
+    position: relative;
+    overflow: hidden;
+    background: var(--c-sky);
+    color: var(--c-navy);
+    box-shadow: 0 10px 30px rgba(56,189,248,.4);
 }
-.kc-load-more-btn:hover:not(:disabled) {
-    background: var(--navy);
-    color: var(--gold);
-    box-shadow: 0 8px 28px rgba(5,46,100,.22);
-    transform: translateY(-2px);
+.mb-cta-main::after {                          /* periodic shine */
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(110deg, transparent 30%, rgba(255,255,255,.55) 50%, transparent 70%);
+    transform: translateX(-120%);
+    animation: mbBtnShine 4s ease-in-out 1.5s infinite;
 }
-.kc-load-more-btn:hover:not(:disabled) i {
-    transform: translateY(3px);
-}
-.kc-load-more-btn:disabled,
-.kc-load-more-btn.hidden { display: none; }
+@keyframes mbBtnShine { 0% { transform: translateX(-120%); } 35%, 100% { transform: translateX(120%); } }
+.mb-cta-main:hover { background: #7dd3fc; color: var(--c-navy); transform: translateY(-2px); }
+.mb-cta-main i { transition: transform .25s; }
+.mb-cta-main:hover i { transform: translateX(4px); }
+.mb-cta-ghost { border: 1.5px solid rgba(255,255,255,.3); color: #fff; }
+.mb-cta-ghost:hover { border-color: #fff; background: rgba(255,255,255,.08); color: #fff; }
+.mb-cta-trust { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px 20px; }
+.mb-cta-trust li { display: flex; align-items: center; gap: 7px; font-size: 13px; color: var(--c-text); }
+.mb-cta-trust i { color: #4ade80; }
 
-/* ── Mobile ── */
-@media (max-width: 600px) {
-    .kc-ev-views { font-size: 9px; padding: 2px 6px; bottom: 8px; right: 8px; }
-    .kc-load-more-btn { padding: 11px 28px; font-size: 12px; }
-    .kc-ev-body { padding: 8px 10px 11px; }
+/* Steps timeline */
+.mb-cta-steps {
+    position: relative;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
 }
+.mb-cta-steps::before,
+.mb-cta-steps::after {                         /* track + fill linking the numbers */
+    content: '';
+    position: absolute;
+    left: 38px;
+    top: 40px;
+    bottom: 40px;
+    width: 2px;
+    border-radius: 2px;
+    background: rgba(255,255,255,.12);
+    z-index: 0;                               /* behind the step cards and number circles */
+}
+.mb-cta-steps::after {
+    background: linear-gradient(180deg, var(--c-sky), #4ade80);
+    transform: scaleY(0);
+    transform-origin: top;
+    transition: transform 1.4s var(--c-ease) .5s;
+}
+.mb-cta-steps.is-revealed::after { transform: scaleY(1); }
+.mb-cta-step {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 16px 18px;
+    border-radius: 16px;
+    background: rgba(255,255,255,.06);
+    border: 1px solid rgba(255,255,255,.1);
+    backdrop-filter: blur(6px);
+    transition: background .3s, border-color .3s;
+}
+.mb-cta-step:hover { background: rgba(255,255,255,.1); border-color: rgba(56,189,248,.4); }
+.mb-cta-num {
+    position: relative;
+    z-index: 1;
+    width: 42px;
+    height: 42px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    display: grid;
+    place-items: center;
+    font-family: var(--fh);
+    font-size: 16px;
+    font-weight: 900;
+    color: var(--c-navy);
+    background: var(--c-sky);
+    box-shadow: 0 0 0 5px rgba(56,189,248,.18);
+}
+.mb-cta-step:last-child .mb-cta-num { background: #4ade80; box-shadow: 0 0 0 5px rgba(74,222,128,.2); }
+.mb-cta-step strong { display: block; font-family: var(--fh); font-size: 15px; font-weight: 800; color: #fff; }
+.mb-cta-step small { display: block; font-size: 13px; color: var(--c-text); margin-top: 2px; }
+.mb-cta-live {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: #86efac;
+    background: rgba(74,222,128,.12);
+    border: 1px solid rgba(74,222,128,.3);
+    padding: 4px 10px;
+    border-radius: 20px;
+}
+.mb-cta-live::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: #4ade80; animation: mbBlink 1.2s infinite; }
+
+@media (max-width: 991px) {
+    .mb-cta { padding: 16px 0 72px; }
+    .mb-cta-panel { grid-template-columns: 1fr; gap: 36px; padding: 40px 32px; }
+}
+@media (max-width: 576px) {
+    .mb-cta-panel { padding: 32px 20px; border-radius: 22px; }
+    .mb-cta-main, .mb-cta-ghost { width: 100%; justify-content: center; }
+    .mb-cta-steps::before, .mb-cta-steps::after { left: 37px; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .mb-cta *, .mb-cta *::before, .mb-cta *::after, .mb-cta-steps::after { animation: none !important; transition: none !important; }
+    .mb-cta-steps::after { transform: none; }
+}
+
+/* ═══════════════════════════════════════════════════
+   3C. ABOUT + 3D. CONTACT
+═══════════════════════════════════════════════════ */
+main > section[id] { scroll-margin-top: 70px; }   /* clear the sticky nav on #jumps */
+
+.mb-about,
+.mb-contact {
+    --a-navy:  #071d3a;
+    --a-navy2: #0c3b6e;
+    --a-blue:  var(--bl-primary, #0284c7);
+    --a-sky:   var(--bl-accent, #38bdf8);
+    --a-tint:  var(--bl-tint, #e0f2fe);
+    --a-muted: #64748b;
+    --a-line:  #e2e8f0;
+    padding: 88px 0 96px;
+}
+.mb-about { background: linear-gradient(180deg, #f0f9ff 0%, #fff 100%); }
+.mb-contact { background: #fff; }
+
+.mb-sec-eyebrow {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--a-tint);
+    color: var(--a-blue);
+    font-family: var(--fh);
+    font-size: 10.5px;
+    font-weight: 800;
+    letter-spacing: 2.5px;
+    text-transform: uppercase;
+    padding: 6px 16px;
+    border-radius: 30px;
+}
+.mb-sec-title {
+    font-family: var(--fh);
+    font-size: clamp(1.5rem, 2.4vw, 2rem);
+    font-weight: 800;
+    line-height: 1.2;
+    letter-spacing: -.02em;
+    color: var(--a-navy);
+    margin: 16px 0 12px;
+}
+.mb-sec-title em { font-style: normal; color: var(--a-blue); }
+.mb-sec-sub { color: var(--a-muted); font-size: 15px; line-height: 1.75; margin: 0; }
+
+/* About */
+.mb-about-grid { display: grid; grid-template-columns: 1.1fr 1fr; gap: 56px; align-items: center; }
+.mb-about-copy .mb-sec-sub + .mb-sec-sub { margin-top: 12px; }
+.mb-values { list-style: none; margin: 28px 0 0; padding: 0; display: flex; flex-direction: column; gap: 16px; }
+.mb-values li { display: flex; gap: 14px; align-items: flex-start; }
+.mb-values i {
+    width: 42px;
+    height: 42px;
+    border-radius: 12px;
+    flex-shrink: 0;
+    display: grid;
+    place-items: center;
+    background: var(--a-tint);
+    color: var(--a-blue);
+    font-size: 16px;
+}
+.mb-values strong { display: block; font-family: var(--fh); font-size: 15px; font-weight: 800; color: var(--a-navy); }
+.mb-values span { display: block; font-size: 13.5px; color: var(--a-muted); line-height: 1.6; margin-top: 2px; }
+
+.mb-about-card {
+    position: relative;
+    overflow: hidden;
+    border-radius: 24px;
+    padding: 32px;
+    color: #fff;
+    background:
+        radial-gradient(380px 260px at 100% 0%, rgba(56,189,248,.3), transparent 70%),
+        linear-gradient(150deg, var(--a-navy) 0%, var(--a-navy2) 100%);
+    box-shadow: 0 30px 70px -34px rgba(7,29,58,.6);
+}
+.mb-about-brand { display: flex; align-items: center; gap: 14px; margin-bottom: 24px; }
+.mb-about-brand img { width: 58px; height: 58px; border-radius: 14px; background: #fff; object-fit: contain; }
+.mb-about-brand strong { display: block; font-family: var(--fh); font-size: 19px; font-weight: 800; }
+.mb-about-brand span { font-size: 12.5px; color: rgba(255,255,255,.65); }
+.mb-facts { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.mb-fact {
+    background: rgba(255,255,255,.06);
+    border: 1px solid rgba(255,255,255,.12);
+    border-radius: 14px;
+    padding: 14px;
+    transition: background .3s, border-color .3s, transform .3s;
+}
+.mb-fact:hover { background: rgba(255,255,255,.1); border-color: rgba(56,189,248,.45); transform: translateY(-2px); }
+.mb-fact i { color: var(--a-sky); font-size: 16px; margin-bottom: 8px; display: block; }
+.mb-fact strong { display: block; font-size: 13.5px; font-weight: 700; }
+.mb-fact span { display: block; font-size: 12px; color: rgba(255,255,255,.6); margin-top: 2px; }
+.mb-about-link {
+    margin-top: 22px;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: #7dd3fc;
+    font-size: 13.5px;
+    font-weight: 700;
+    text-decoration: none;
+}
+.mb-about-link:hover { color: #fff; }
+.mb-about-link i { transition: transform .25s; }
+.mb-about-link:hover i { transform: translateX(4px); }
+
+/* Contact */
+.mb-contact-head { max-width: 620px; margin: 0 0 40px; }
+.mb-contact-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; }
+.mb-ccard {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 24px 22px;
+    border-radius: 18px;
+    border: 1px solid var(--a-line);
+    background: #fff;
+    color: inherit;
+    text-decoration: none;
+    box-shadow: 0 16px 36px -28px rgba(7,29,58,.4);
+    transition: transform .3s, box-shadow .3s, border-color .3s;
+}
+a.mb-ccard:hover { transform: translateY(-4px); border-color: rgba(2,132,199,.4); box-shadow: 0 24px 44px -26px rgba(2,132,199,.45); }
+.mb-ccard i {
+    width: 46px;
+    height: 46px;
+    border-radius: 13px;
+    display: grid;
+    place-items: center;
+    font-size: 18px;
+    color: #fff;
+    background: linear-gradient(135deg, var(--a-sky), var(--a-blue));
+    margin-bottom: 14px;
+}
+.mb-ccard.is-wa i { background: linear-gradient(135deg, #4ade80, #16a34a); }
+.mb-ccard small { font-size: 11px; font-weight: 800; letter-spacing: 1.2px; text-transform: uppercase; color: var(--a-muted); }
+.mb-ccard strong { font-family: var(--fh); font-size: 16px; font-weight: 800; color: var(--a-navy); overflow-wrap: anywhere; }
+.mb-ccard span { font-size: 13px; color: var(--a-muted); }
+
+.mb-demo {
+    margin-top: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 24px;
+    flex-wrap: wrap;
+    padding: 28px 32px;
+    border-radius: 20px;
+    background: linear-gradient(135deg, var(--a-tint) 0%, #f0f9ff 100%);
+    border: 1px solid #bae6fd;
+}
+.mb-demo h3 { font-family: var(--fh); font-size: 20px; font-weight: 800; color: var(--a-navy); margin: 0 0 4px; }
+.mb-demo p { font-size: 14px; color: var(--a-muted); margin: 0; }
+.mb-demo-btns { display: flex; gap: 10px; flex-wrap: wrap; }
+.mb-demo-btns a {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 22px;
+    border-radius: 50px;
+    font-family: var(--fh);
+    font-size: 13.5px;
+    font-weight: 800;
+    text-decoration: none;
+    transition: background .2s, color .2s, transform .2s;
+}
+.mb-demo-btns .is-wa { background: #16a34a; color: #fff; }
+.mb-demo-btns .is-wa:hover { background: #15803d; color: #fff; transform: translateY(-2px); }
+.mb-demo-btns .is-mail { border: 1.5px solid var(--a-blue); color: var(--a-blue); background: #fff; }
+.mb-demo-btns .is-mail:hover { background: var(--a-blue); color: #fff; }
+
+@media (max-width: 1199px) {
+    .mb-contact-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 991px) {
+    .mb-about, .mb-contact { padding: 64px 0 72px; }
+    .mb-about-grid { grid-template-columns: 1fr; gap: 36px; }
+}
+@media (max-width: 576px) {
+    .mb-contact-grid { grid-template-columns: 1fr; }
+    .mb-about-card { padding: 24px 20px; }
+    .mb-demo { padding: 24px 20px; }
+    .mb-demo-btns, .mb-demo-btns a { width: 100%; justify-content: center; }
+}
+
+/* ═══════════════════════════════════════════════════
+   PAGE MOTION — load-in + scroll reveal + progress bar
+   (only when JS is on: <html class="mb-js"> is set in <head>)
+═══════════════════════════════════════════════════ */
+/* Default: the element rises while a mask opens from the bottom up.
+   The revealed inset is negative so shadows and glows are never clipped. */
+.mb-js [data-reveal] {
+    opacity: 0;
+    transform: translate3d(0, 40px, 0);
+    clip-path: inset(100% -60px -60px -60px);
+    transition:
+        opacity .6s ease,
+        transform .9s cubic-bezier(.16,1,.3,1),
+        clip-path .9s cubic-bezier(.16,1,.3,1);
+    transition-delay: calc(var(--rd, 0) * 110ms);
+}
+.mb-js [data-reveal].is-revealed {
+    opacity: 1;
+    transform: none;
+    clip-path: inset(-60px -60px -60px -60px);
+}
+/* Panels and side items: no mask, just a clean scale / slide */
+.mb-js [data-reveal="zoom"],
+.mb-js [data-reveal="right"] { clip-path: none; transition-property: opacity, transform; }
+.mb-js [data-reveal="zoom"]  { transform: translate3d(0, 30px, 0) scale(.96); }
+.mb-js [data-reveal="right"] { transform: translate3d(48px, 0, 0); }
+.mb-js [data-reveal="zoom"].is-revealed,
+.mb-js [data-reveal="right"].is-revealed { clip-path: none; transform: none; }
+.mb-js [data-reveal="line"] { opacity: 1; transform: none; clip-path: none; }  /* only toggles is-revealed */
+
+/* Nav drops in on load */
+.mb-js .kc-nav { animation: mbNavIn .8s cubic-bezier(.16,1,.3,1) both; }
+@keyframes mbNavIn { from { opacity: 0; transform: translateY(-18px); } }
+
+/* Hero: hold the first slide's entrance until the page has painted */
+.mb-js .mb-hero:not(.is-ready) .mb-slide-text > * { opacity: 0; transform: translateY(26px); }
+.mb-js .mb-hero:not(.is-ready) .mb-frame { clip-path: inset(0 0 0 100% round 24px); }
+.mb-js .mb-hero:not(.is-ready) .mb-frame img { transform: scale(1.12); }
+.mb-js .mb-hero:not(.is-ready) .mb-chip { opacity: 0; transform: translateY(12px) scale(.96); }
+.mb-js .mb-hero:not(.is-ready) .mb-controls { opacity: 0; }
+.mb-hero .mb-controls { transition: opacity .8s ease .5s; }
+
+/* Scroll progress bar */
+.mb-progress {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    z-index: 2000;
+    background: linear-gradient(90deg, var(--bl-accent, #38bdf8), var(--bl-primary, #0284c7));
+    transform: scaleX(0);
+    transform-origin: left;
+    pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .mb-js [data-reveal] { opacity: 1; transform: none; clip-path: none; transition: none; }
+    .mb-js .kc-nav { animation: none; }
+}
+
 </style>
 
 <body id="section_1">
+    <div class="mb-progress" id="mbProgress" aria-hidden="true"></div>
+
 
     <?php include_once('includes/header.php'); ?>
     <?php include_once('includes/nav.php'); ?>
@@ -1711,1059 +2078,1137 @@ a.kc-ev-card:hover {
     <main>
 
     <!-- ════════════════════════════════════════════════════════
-         HERO CAROUSEL
+         HERO SLIDER
     ════════════════════════════════════════════════════════ -->
-    <section class="kc-hero-section">
-        <div id="kcHeroCarousel" class="carousel slide carousel-fade h-100"
-             data-bs-ride="carousel" data-bs-touch="true" data-bs-interval="5000">
-            <div class="carousel-inner h-100">
+    <section class="mb-hero" id="home" aria-roledescription="carousel" aria-label="Highlights" style="--mb-interval:6s">
+        <div class="container">
+            <div class="mb-hero-track">
+                <?php foreach ($heroSlides as $i => $s): $tag = $i === 0 ? 'h1' : 'h2'; ?>
+                <div class="mb-slide<?= $i === 0 ? ' is-active' : '' ?>"
+                     role="group" aria-roledescription="slide"
+                     aria-label="<?= $i + 1 ?> of <?= count($heroSlides) ?>"<?= $i === 0 ? '' : ' aria-hidden="true" inert' ?>>
 
-                <?php if (empty($slides)): ?>
-                <div class="carousel-item active h-100">
-                    <img src="images/slide/christina-wocintechchat-com-NDoVgcS_lZM-unsplash.jpg"
-                         class="kc-hero-img" alt="Keychele — Kenya's Creator Platform">
-                    <div class="kc-hero-overlay"></div>
-                    <div class="kc-hero-caption">
-                        <div class="kc-hero-eyebrow"><i class="fas fa-bolt"></i> Welcome to Keychele</div>
-                        <h1 class="kc-hero-title">Kenya's <span>Creator</span><br>Monetization Platform</h1>
-                        <p class="kc-hero-sub">Sell tickets, run fundraisers, host competitions &amp; receive fan support — all in one place.</p>
-                        <div class="kc-hero-btns">
-                            <a href="/register" class="kc-hero-btn-main"><i class="fas fa-user-plus"></i> Get Started Free</a>
-                            <a href="/events"   class="kc-hero-btn-out"><i class="fas fa-calendar-alt"></i> Browse Events</a>
+                    <div class="mb-slide-text">
+                        <?php if ($s['eyebrow'] !== ''): ?>
+                        <div class="mb-eyebrow"><i class="fas fa-bolt"></i> <?= htmlspecialchars($s['eyebrow']) ?></div>
+                        <?php endif; ?>
+                        <<?= $tag ?> class="mb-title"><?= $s['title'] ?></<?= $tag ?>>
+                        <?php if ($s['sub'] !== ''): ?>
+                        <p class="mb-sub"><?= htmlspecialchars($s['sub']) ?></p>
+                        <?php endif; ?>
+                        <div class="mb-btns">
+                            <?php if ($s['btn1'][0] !== ''): ?>
+                            <a href="<?= htmlspecialchars($s['btn1'][1]) ?>" class="mb-btn-main"><?= htmlspecialchars($s['btn1'][0]) ?> <i class="fas fa-arrow-right"></i></a>
+                            <?php endif; ?>
+                            <?php if ($s['btn2'][0] !== '' && $s['btn2'][1] !== ''): ?>
+                            <a href="<?= htmlspecialchars($s['btn2'][1]) ?>" class="mb-btn-ghost"><?= htmlspecialchars($s['btn2'][0]) ?></a>
+                            <?php endif; ?>
                         </div>
                     </div>
+
+                    <div class="mb-visual">
+                        <div class="mb-frame">
+                            <img src="<?= htmlspecialchars($s['image']) ?>" alt=""
+                                 <?= $i === 0 ? 'fetchpriority="high"' : 'loading="lazy"' ?>>
+                        </div>
+                        <?php foreach ($s['chips'] as $n => [$icon, $green, $label, $detail]): ?>
+                        <div class="mb-chip mb-chip-<?= $n + 1 ?>" aria-hidden="true">
+                            <div class="mb-chip-ico<?= $green ? ' is-green' : '' ?>"><i class="fas <?= $icon ?>"></i></div>
+                            <div><strong><?= htmlspecialchars($label) ?></strong><span><?= htmlspecialchars($detail) ?></span></div>
+                        </div>
+                        <?php endforeach; ?>
+                    </div>
+
                 </div>
-                <?php else: ?>
-                    <?php foreach ($slides as $i => $slide): ?>
-                    <div class="carousel-item <?= $i === 0 ? 'active' : '' ?> h-100">
-                        <img src="uploads/slides/<?= htmlspecialchars($slide['image']) ?>"
-                             class="kc-hero-img"
-                             alt="<?= htmlspecialchars($slide['title']) ?>">
-                        <div class="kc-hero-overlay"></div>
-                        <div class="kc-hero-caption">
-                            <div class="kc-hero-eyebrow">
-                                <i class="fas fa-bolt"></i>
-                                <?= htmlspecialchars($slide['description']) ?>
-                            </div>
-                            <h1 class="kc-hero-title"><?= nl2br(htmlspecialchars($slide['title'])) ?></h1>
-                            <div class="kc-hero-btns">
-                                <a href="<?= htmlspecialchars($slide['btn1_link']) ?>"
-                                   class="kc-hero-btn-main">
-                                    <?= htmlspecialchars($slide['btn1_text']) ?>
-                                </a>
-                                <?php if (!empty($slide['btn2_text']) && !empty($slide['btn2_link'])): ?>
-                                <a href="<?= htmlspecialchars($slide['btn2_link']) ?>"
-                                   class="kc-hero-btn-out">
-                                    <?= htmlspecialchars($slide['btn2_text']) ?>
-                                </a>
-                                <?php endif; ?>
-                            </div>
-                        </div>
-                    </div>
+                <?php endforeach; ?>
+            </div><!-- /mb-hero-track -->
+
+            <?php if (count($heroSlides) > 1): ?>
+            <div class="mb-controls">
+                <div class="mb-count" aria-hidden="true"><b id="mbHeroNum">01</b> / <?= sprintf('%02d', count($heroSlides)) ?></div>
+                <div class="mb-bars">
+                    <?php foreach ($heroSlides as $i => $s): ?>
+                    <button type="button" class="mb-bar<?= $i === 0 ? ' is-active' : '' ?>" data-go="<?= $i ?>"
+                            aria-label="Go to slide <?= $i + 1 ?>"><span></span></button>
                     <?php endforeach; ?>
-                <?php endif; ?>
-
-            </div><!-- /carousel-inner -->
-
-            <?php if (count($slides) > 1): ?>
-            <button class="kc-hero-prev" data-bs-target="#kcHeroCarousel" data-bs-slide="prev" aria-label="Previous">
-                <i class="fas fa-chevron-left"></i>
-            </button>
-            <button class="kc-hero-next" data-bs-target="#kcHeroCarousel" data-bs-slide="next" aria-label="Next">
-                <i class="fas fa-chevron-right"></i>
-            </button>
+                </div>
+                <div class="mb-arrows">
+                    <button type="button" class="mb-arrow" data-dir="-1" aria-label="Previous slide"><i class="fas fa-arrow-left"></i></button>
+                    <button type="button" class="mb-arrow" data-dir="1"  aria-label="Next slide"><i class="fas fa-arrow-right"></i></button>
+                </div>
+            </div>
             <?php endif; ?>
-
-        </div><!-- /carousel -->
-
-        <?php if (count($slides) > 1): ?>
-        <div class="kc-hero-dots" id="kcHeroDots">
-            <?php foreach ($slides as $i => $slide): ?>
-            <div class="kc-hero-dot <?= $i === 0 ? 'active' : '' ?>"
-                 onclick="kcGotoSlide(<?= $i ?>)"></div>
-            <?php endforeach; ?>
         </div>
-        <?php endif; ?>
-
     </section>
     <!-- /HERO -->
 
 
     <!-- ════════════════════════════════════════════════════════
-         ADVERTS STRIP
+         LIVE DASHBOARD PREVIEW (illustrative sample data)
     ════════════════════════════════════════════════════════ -->
-    <section class="kc-advert-section">
+    <section class="mb-dash" id="mbDash" aria-labelledby="mbDashTitle">
         <div class="container">
-            <div class="kc-advert-grid">
 
-                <a href="/register" class="kc-advert-card kc-advert-card-1">
-                    <div class="kc-advert-icon"><i class="fas fa-ticket-alt"></i></div>
-                    <div class="kc-advert-text">
-                        <h6>Sell Tickets</h6>
-                        <p>Go live in minutes.</p>
-                    </div>
-                    <div class="kc-advert-arrow"><i class="fas fa-arrow-right"></i></div>
-                </a>
+            <div class="mb-dash-head">
+                <div class="mb-dash-eyebrow" data-reveal><i class="fas fa-chart-line"></i> Live Dashboard</div>
+                <h2 class="mb-dash-title" data-reveal style="--rd:1" id="mbDashTitle">Your whole network, <em>at a glance</em></h2>
+                <p class="mb-dash-sub" data-reveal style="--rd:2">Earnings, customers online, data usage and M-Pesa payments update the moment they happen, so you always know how your business is doing.</p>
+            </div>
 
-                <a href="/register" class="kc-advert-card kc-advert-card-2">
-                    <div class="kc-advert-icon"><i class="fas fa-music"></i></div>
-                    <div class="kc-advert-text">
-                        <h6>Sell Music</h6>
-                        <p>Tracks &amp; albums to fans.</p>
-                    </div>
-                    <div class="kc-advert-arrow"><i class="fas fa-arrow-right"></i></div>
-                </a>
+            <div class="mb-app" role="img" aria-label="Preview of the <?= htmlspecialchars($siteName) ?> dashboard with earnings, customer counts, a revenue chart and live M-Pesa payments">
+                <div class="mb-app-bar">
+                    <span class="mb-app-dots"><i></i><i></i><i></i></span>
+                    <span class="mb-app-url"><i class="fas fa-lock"></i> <?= htmlspecialchars($siteName) ?> · Dashboard</span>
+                    <span class="mb-app-tag">Sample data</span>
+                </div>
 
-                <a href="/register" class="kc-advert-card kc-advert-card-3">
-                    <div class="kc-advert-icon"><i class="fas fa-trophy"></i></div>
-                    <div class="kc-advert-text">
-                        <h6>Run Contest</h6>
-                        <p>Trivia, polls &amp; prizes.</p>
+                <div class="mb-app-body">
+                    <aside class="mb-app-side">
+                        <div class="mb-app-user">
+                            <span class="mb-app-av">D</span>
+                            <div><strong>demo</strong><em>Administrator</em></div>
+                        </div>
+                        <div class="mb-app-nav">
+                            <span class="is-active"><i class="fas fa-gauge-high"></i> Dashboard</span>
+                            <div class="mb-app-group">Customers</div>
+                            <span><i class="fas fa-user-check"></i> Online Customers <b data-live-online>0</b></span>
+                            <span><i class="fas fa-users"></i> Active Customers <b>1,126</b></span>
+                            <span><i class="fas fa-user-plus"></i> Add Customer</span>
+                            <span><i class="fas fa-ticket"></i> Vouchers</span>
+                            <div class="mb-app-group">Network</div>
+                            <span><i class="fas fa-server"></i> Routers</span>
+                            <span><i class="fas fa-tower-broadcast"></i> Usage Analytics</span>
+                            <span><i class="fas fa-comment-dots"></i> Messages</span>
+                        </div>
+                    </aside>
+
+                    <div class="mb-app-main">
+                        <div class="mb-app-top">
+                            <div class="mb-app-search"><i class="fas fa-magnifying-glass"></i> Search customers by name or phone…</div>
+                            <div class="mb-app-online"><span class="mb-pulse"></span> <b data-live-online>0</b> online right now</div>
+                        </div>
+
+                        <div class="mb-app-title">
+                            <small>Overview</small>
+                            <h3>Dashboard<span>.</span></h3>
+                            <p>Live business snapshot — <span id="mbDashNow"></span></p>
+                        </div>
+
+                        <div class="mb-stats">
+                            <div class="mb-stat" style="--c:#0284c7">
+                                <div class="mb-stat-top"><span>Earnings today</span><i class="fas fa-sack-dollar"></i></div>
+                                <div class="mb-stat-val">KES <b id="mbEarnToday" data-count="48750">0</b></div>
+                                <div class="mb-stat-foot is-up"><i class="fas fa-arrow-trend-up"></i> 12.4% vs yesterday</div>
+                            </div>
+                            <div class="mb-stat" style="--c:#38bdf8">
+                                <div class="mb-stat-top"><span>This week</span><i class="fas fa-calendar-week"></i></div>
+                                <div class="mb-stat-val">KES <b data-count="286400">0</b></div>
+                                <div class="mb-stat-foot">Monday to today</div>
+                            </div>
+                            <div class="mb-stat" style="--c:#16a34a">
+                                <div class="mb-stat-top"><span>This month</span><i class="fas fa-calendar-days"></i></div>
+                                <div class="mb-stat-val">KES <b data-count="1124900">0</b></div>
+                                <div class="mb-stat-foot is-up"><i class="fas fa-arrow-trend-up"></i> 8.1% vs last month</div>
+                            </div>
+                            <div class="mb-stat" style="--c:#071d3a">
+                                <div class="mb-stat-top"><span>Total clients</span><i class="fas fa-users"></i></div>
+                                <div class="mb-stat-val"><b data-count="1284">0</b></div>
+                                <div class="mb-stat-foot is-up">+38 new this month</div>
+                            </div>
+                        </div>
+
+                        <div class="mb-row">
+                            <div class="mb-card">
+                                <div class="mb-card-head"><h4><i class="fas fa-chart-area"></i> Revenue</h4><span>Last 14 days</span></div>
+                                <svg class="mb-chart" id="mbChart" viewBox="0 0 600 220" aria-hidden="true"></svg>
+                                <div class="mb-chart-x" id="mbChartX"></div>
+                            </div>
+                            <div class="mb-card">
+                                <div class="mb-card-head"><h4><i class="fas fa-mobile-screen"></i> M-Pesa payments</h4><span class="mb-live">Live</span></div>
+                                <ul class="mb-feed" id="mbFeed"></ul>
+                            </div>
+                        </div>
+
+                        <div class="mb-row mb-row-3">
+                            <div class="mb-card">
+                                <div class="mb-card-head"><h4><i class="fas fa-database"></i> Data usage this month</h4></div>
+                                <div class="mb-ring-wrap">
+                                    <svg class="mb-ring" viewBox="0 0 120 120" aria-hidden="true">
+                                        <circle class="mb-ring-bg" cx="60" cy="60" r="50"/>
+                                        <circle class="mb-ring-fg" cx="60" cy="60" r="50" style="--p:.72"/>
+                                    </svg>
+                                    <div class="mb-ring-label"><b><span data-count="3.4" data-dec="1">0</span> TB</b><small>72% of peak</small></div>
+                                </div>
+                                <div class="mb-ring-legend"><span><i class="fas fa-arrow-down"></i>2.9 TB</span><span><i class="fas fa-arrow-up"></i>0.5 TB</span></div>
+                            </div>
+                            <div class="mb-card">
+                                <div class="mb-card-head"><h4><i class="fas fa-layer-group"></i> Customers by plan</h4></div>
+                                <ul class="mb-plans">
+                                    <li><span>PPPoE 10 Mbps</span><b>412</b><div class="mb-hbar"><i style="--w:82%"></i></div></li>
+                                    <li><span>Hotspot 1 Day</span><b>356</b><div class="mb-hbar"><i style="--w:70%"></i></div></li>
+                                    <li><span>PPPoE 20 Mbps</span><b>238</b><div class="mb-hbar"><i style="--w:48%"></i></div></li>
+                                    <li><span>Hotspot 1 Week</span><b>168</b><div class="mb-hbar"><i style="--w:34%"></i></div></li>
+                                    <li><span>Hotspot 1 Hour</span><b>110</b><div class="mb-hbar"><i style="--w:22%"></i></div></li>
+                                </ul>
+                            </div>
+                            <div class="mb-card">
+                                <div class="mb-card-head"><h4><i class="fas fa-bolt"></i> At a glance</h4></div>
+                                <ul class="mb-glance">
+                                    <li><span class="mb-glance-ico" style="--bg:#dcfce7;--fg:#16a34a"><i class="fas fa-server"></i></span>
+                                        <div><small>Routers online</small><strong>6 / 6</strong></div></li>
+                                    <li><span class="mb-glance-ico" style="--bg:#fef3c7;--fg:#d97706"><i class="fas fa-hourglass-half"></i></span>
+                                        <div><small>Expiring in 24h</small><strong data-count="14">0</strong></div></li>
+                                    <li><span class="mb-glance-ico" style="--bg:#e0f2fe;--fg:#0284c7"><i class="fas fa-comment-sms"></i></span>
+                                        <div><small>SMS balance</small><strong>KES <span data-count="2450">0</span></strong></div></li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div><!-- /mb-app-main -->
+                </div>
+            </div><!-- /mb-app -->
+
+            <div class="mb-dash-points">
+                <div class="mb-point" data-reveal style="--rd:0">
+                    <i class="fas fa-bolt"></i>
+                    <div><h3>Real-time earnings</h3><p>Every M-Pesa payment lands on your dashboard the second it clears.</p></div>
+                </div>
+                <div class="mb-point" data-reveal style="--rd:1">
+                    <i class="fas fa-plug-circle-check"></i>
+                    <div><h3>Automatic access control</h3><p>Expired customers are cut off and reconnected the moment they pay.</p></div>
+                </div>
+                <div class="mb-point" data-reveal style="--rd:2">
+                    <i class="fas fa-chart-pie"></i>
+                    <div><h3>Usage analytics</h3><p>See data usage per customer, plan and router to plan capacity.</p></div>
+                </div>
+            </div>
+
+        </div>
+    </section>
+    <!-- /LIVE DASHBOARD -->
+
+
+    <!-- ════════════════════════════════════════════════════════
+         FEATURES
+    ════════════════════════════════════════════════════════ -->
+    <section class="mb-feat" id="features" aria-labelledby="mbFeatTitle">
+        <div class="container">
+
+            <div class="mb-feat-head">
+                <div class="mb-feat-eyebrow" data-reveal><i class="fas fa-layer-group"></i> Features</div>
+                <h2 class="mb-feat-title" data-reveal style="--rd:1" id="mbFeatTitle">Everything you need to <em>run your ISP</em></h2>
+                <p class="mb-feat-sub" data-reveal style="--rd:2">From hotspot vouchers to PPPoE renewals, the tools that collect your money, keep customers online and keep them happy.</p>
+            </div>
+
+            <div class="mb-feat-big">
+
+                <article class="mb-fcard" style="--i:0">
+                    <div class="mb-fvis" aria-hidden="true">
+                        <div class="mb-vch">
+                            <div class="mb-vch-card is-back"></div>
+                            <div class="mb-vch-card is-mid"></div>
+                            <div class="mb-vch-card is-front">
+                                <div class="mb-vch-top"><span>Hotspot voucher</span><b>KES 50</b></div>
+                                <div class="mb-vch-code">MBX-4K7Q-92</div>
+                                <div class="mb-vch-meta">
+                                    <span><i class="fas fa-clock"></i>1 Day</span>
+                                    <span><i class="fas fa-infinity"></i>Unlimited</span>
+                                    <span><i class="fas fa-mobile-screen"></i>1 device</span>
+                                </div>
+                            </div>
+                        </div>
                     </div>
-                    <div class="kc-advert-arrow"><i class="fas fa-arrow-right"></i></div>
-                </a>
+                    <div class="mb-fbody">
+                        <h3>Voucher management</h3>
+                        <p>Generate, print and sell hotspot vouchers in bulk, or let customers buy one instantly with M-Pesa.</p>
+                        <div class="mb-ftags"><span>Bulk generate</span><span>Print-ready</span><span>Time &amp; data limits</span></div>
+                    </div>
+                </article>
+
+                <article class="mb-fcard" style="--i:1">
+                    <div class="mb-fvis" aria-hidden="true">
+                        <div class="mb-fup">
+                            <div class="mb-fup-speed">
+                                <span class="mb-fup-fast">20 <small>Mbps</small></span>
+                                <span class="mb-fup-slow">5 <small>Mbps</small></span>
+                            </div>
+                            <div class="mb-fup-bar"><div class="mb-fup-fill"></div><span class="mb-fup-cap"></span></div>
+                            <div class="mb-fup-legend"><span>Data used this cycle</span><b>FUP cap 100 GB</b></div>
+                        </div>
+                    </div>
+                    <div class="mb-fbody">
+                        <h3>Fair Usage Policy (FUP)</h3>
+                        <p>Set data caps per package. Speeds drop automatically when a customer hits the cap and reset on renewal.</p>
+                        <div class="mb-ftags"><span>Per-package caps</span><span>Auto throttle</span><span>Auto reset</span></div>
+                    </div>
+                </article>
+
+                <article class="mb-fcard" style="--i:2">
+                    <div class="mb-fvis" aria-hidden="true">
+                        <div class="mb-wal">
+                            <div class="mb-wal-bal">
+                                <div><small>Wallet balance</small><b>KES 1,500</b></div>
+                                <span class="mb-wal-auto"><i></i>Auto-renew</span>
+                            </div>
+                            <ul>
+                                <li><i class="fas fa-arrow-down is-plus"></i> Top-up via M-Pesa <b class="is-plus">+3,000</b></li>
+                                <li><i class="fas fa-rotate is-minus"></i> Renewed · PPPoE 10 Mbps <b>−1,500</b></li>
+                            </ul>
+                        </div>
+                    </div>
+                    <div class="mb-fbody">
+                        <h3>Wallet system</h3>
+                        <p>Customers top up ahead of time and their package renews automatically from the wallet balance.</p>
+                        <div class="mb-ftags"><span>Prepaid balance</span><span>Auto-renew</span><span>Statements</span></div>
+                    </div>
+                </article>
+
+            </div>
+
+            <div class="mb-feat-grid">
+                <article class="mb-fcard" style="--i:3">
+                    <div class="mb-fico is-green"><i class="fas fa-plug-circle-check"></i></div>
+                    <h3>Auto reconnection</h3>
+                    <p>Expired customers are cut off on time and reconnected the moment they pay.</p>
+                </article>
+                <article class="mb-fcard" style="--i:4">
+                    <div class="mb-fico"><i class="fas fa-door-open"></i></div>
+                    <h3>PPPoE captive portal</h3>
+                    <p>Expired PPPoE users are redirected to a renewal page where they can pay and get back online.</p>
+                </article>
+                <article class="mb-fcard" style="--i:5">
+                    <div class="mb-fico"><i class="fas fa-comments"></i></div>
+                    <h3>Customer chat</h3>
+                    <p>Customers message their ISP directly from the portal, so issues reach you fast.</p>
+                </article>
+                <article class="mb-fcard" style="--i:6">
+                    <div class="mb-fico is-amber"><i class="fas fa-headset"></i></div>
+                    <h3>24/7 support</h3>
+                    <p>Our team is available around the clock whenever you need help with your system.</p>
+                </article>
+                <article class="mb-fcard" style="--i:7">
+                    <div class="mb-fico"><i class="fas fa-tv"></i></div>
+                    <h3>TV billing</h3>
+                    <p>Bill TV subscriptions alongside internet packages, all on one customer account.</p>
+                </article>
+                <article class="mb-fcard" style="--i:8">
+                    <div class="mb-fico is-green"><i class="fas fa-mobile-screen-button"></i></div>
+                    <h3>M-Pesa payments</h3>
+                    <p>STK push and Paybill payments are matched to customers and activated instantly.</p>
+                </article>
+                <article class="mb-fcard" style="--i:9">
+                    <div class="mb-fico"><i class="fas fa-comment-sms"></i></div>
+                    <h3>SMS alerts</h3>
+                    <p>Automatic expiry reminders, payment receipts and bulk messages to your customers.</p>
+                </article>
+                <article class="mb-fcard" style="--i:10">
+                    <div class="mb-fico"><i class="fas fa-chart-column"></i></div>
+                    <h3>Usage analytics</h3>
+                    <p>Track data usage per customer, package and router to plan capacity.</p>
+                </article>
+            </div>
+
+        </div>
+    </section>
+    <!-- /FEATURES -->
+
+
+    <!-- ════════════════════════════════════════════════════════
+         EARN · CONNECT · GROW
+    ════════════════════════════════════════════════════════ -->
+    <section class="mb-earn" id="earn" aria-labelledby="mbEarnTitle">
+        <div class="container">
+
+            <div class="mb-earn-head">
+                <div class="mb-earn-eyebrow" data-reveal><i class="fas fa-coins"></i> How you earn</div>
+                <h2 class="mb-earn-title" data-reveal style="--rd:1" id="mbEarnTitle">Earn, connect and <em>grow</em></h2>
+                <p class="mb-earn-sub" data-reveal style="--rd:2">Payments come in on their own, customers get online the moment they pay, and you get the numbers to grow your network.</p>
+            </div>
+
+            <div class="mb-earn-grid">
+
+                <!-- 1. EARN -->
+                <article class="mb-ecard">
+                    <div class="mb-evis">
+                        <span class="mb-estep">01</span>
+                        <svg viewBox="0 0 320 210" aria-hidden="true">
+                            <ellipse cx="120" cy="188" rx="62" ry="8" fill="rgba(7,29,58,.08)"/>
+                            <g id="mbCoins">
+                                <?php for ($c = 0; $c < 6; $c++): $y = 176 - $c * 12; ?>
+                                <g transform="translate(120 <?= $y ?>)">
+                                    <g class="mb-coin">
+                                        <rect x="-34" y="-6" width="68" height="10" fill="#d4920a"/>
+                                        <ellipse cx="0" cy="4" rx="34" ry="9" fill="#c2830a"/>
+                                        <ellipse cx="0" cy="-6" rx="34" ry="9" fill="#fbbf24" stroke="#f59e0b" stroke-width="1.5"/>
+                                        <ellipse cx="0" cy="-6" rx="21" ry="5" fill="none" stroke="#d4920a" stroke-width="1.5" opacity=".7"/>
+                                    </g>
+                                </g>
+                                <?php endfor; ?>
+                            </g>
+                            <text class="mb-coin-plus" id="mbCoinPlus" x="164" y="160">+50</text>
+                            <!-- phone with running M-Pesa total -->
+                            <rect x="222" y="40" width="78" height="134" rx="13" fill="#071d3a"/>
+                            <rect x="228" y="52" width="66" height="110" rx="7" fill="#0c3b6e"/>
+                            <rect x="250" y="45" width="22" height="3" rx="1.5" fill="#1e3a5f"/>
+                            <text class="mb-phone-sm" x="261" y="72" text-anchor="middle">M-PESA</text>
+                            <text class="mb-phone-lbl" x="261" y="96" text-anchor="middle">Received today</text>
+                            <text class="mb-phone-amt" id="mbCoinTotal" x="261" y="116" text-anchor="middle">KES 0</text>
+                            <circle cx="261" cy="140" r="10" fill="#16a34a"/>
+                            <path d="M256 140 l3.5 3.5 l6.5 -7" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
+                    </div>
+                    <div class="mb-ebody">
+                        <h3>Earn automatically</h3>
+                        <p>Every package sale and renewal is paid by M-Pesa straight into your account, day and night.</p>
+                        <ul>
+                            <li><i class="fas fa-check"></i> No cash to collect or chase</li>
+                            <li><i class="fas fa-check"></i> Every payment matched to a customer</li>
+                        </ul>
+                    </div>
+                </article>
+
+                <!-- 2. CONNECT -->
+                <article class="mb-ecard">
+                    <div class="mb-evis">
+                        <span class="mb-estep">02</span>
+                        <svg viewBox="0 0 320 210" aria-hidden="true">
+                            <ellipse cx="160" cy="186" rx="130" ry="7" fill="rgba(7,29,58,.06)"/>
+                            <!-- customer's house -->
+                            <polygon points="12,114 45,84 78,114" fill="#0284c7"/>
+                            <rect x="20" y="112" width="50" height="40" fill="#e0f2fe" stroke="#0284c7" stroke-width="2"/>
+                            <rect class="mb-win" x="28" y="122" width="15" height="12" rx="1.5"/>
+                            <rect x="50" y="128" width="12" height="24" fill="#0284c7"/>
+                            <!-- cable: drawn in, then data flows along it -->
+                            <path class="mb-cable" pathLength="100" d="M70 142 C 96 142, 96 118, 120 118 L 160 118"/>
+                            <path class="mb-flow" d="M70 142 C 96 142, 96 118, 120 118 L 176 118"/>
+                            <!-- plug slides into the port -->
+                            <g class="mb-plug">
+                                <line x1="130" y1="118" x2="172" y2="118" stroke="#0c3b6e" stroke-width="5" stroke-linecap="round"/>
+                                <rect x="168" y="111" width="9" height="14" rx="2" fill="#38bdf8"/>
+                                <rect x="176" y="110" width="20" height="16" rx="2" fill="#e2e8f0" stroke="#94a3b8" stroke-width="1.5"/>
+                                <rect x="195" y="113" width="7" height="10" fill="#cbd5e1"/>
+                            </g>
+                            <!-- switch -->
+                            <rect x="200" y="74" width="106" height="88" rx="10" fill="#0c3b6e"/>
+                            <rect x="196" y="108" width="10" height="20" rx="2" fill="#071d3a"/>
+                            <circle class="mb-led-main" cx="218" cy="92" r="4.5"/>
+                            <text x="228" y="95" font-size="8" font-weight="700" fill="#7dd3fc" font-family="system-ui, sans-serif" letter-spacing="1">LINK</text>
+                            <?php for ($p = 0; $p < 4; $p++): ?>
+                            <rect x="<?= 214 + $p * 22 ?>" y="134" width="15" height="12" rx="2" fill="#071d3a"/>
+                            <circle class="mb-led-sm<?= $p === 1 ? ' is-b' : ($p === 3 ? ' is-c' : '') ?>" cx="<?= 221.5 + $p * 22 ?>" cy="126" r="2.2"/>
+                            <?php endfor; ?>
+                            <!-- "Connected" badge -->
+                            <g class="mb-conn-badge">
+                                <rect x="206" y="40" width="94" height="24" rx="12" fill="#dcfce7" stroke="#86efac"/>
+                                <circle cx="222" cy="52" r="4" fill="#16a34a"/>
+                                <text x="231" y="56" font-size="11" font-weight="800" fill="#15803d" font-family="system-ui, sans-serif">Connected</text>
+                            </g>
+                        </svg>
+                    </div>
+                    <div class="mb-ebody">
+                        <h3>Connect instantly</h3>
+                        <p>Link your MikroTik routers once. Customers are switched on the moment they pay and switched off when they expire.</p>
+                        <ul>
+                            <li><i class="fas fa-check"></i> PPPoE and hotspot on one system</li>
+                            <li><i class="fas fa-check"></i> Automatic reconnection after payment</li>
+                        </ul>
+                    </div>
+                </article>
+
+                <!-- 3. GROW -->
+                <article class="mb-ecard">
+                    <div class="mb-evis">
+                        <span class="mb-estep">03</span>
+                        <svg viewBox="0 0 320 210" aria-hidden="true">
+                            <defs>
+                                <linearGradient id="mbGrowGrad" x1="0" y1="0" x2="0" y2="1">
+                                    <stop offset="0" stop-color="#38bdf8"/><stop offset="1" stop-color="#0284c7"/>
+                                </linearGradient>
+                            </defs>
+                            <line x1="30" y1="178" x2="292" y2="178" stroke="#cbd5e1" stroke-width="2" stroke-linecap="round"/>
+                            <?php foreach ([40, 62, 82, 106, 134] as $b => $h): ?>
+                            <rect class="mb-gbar" style="--i:<?= $b ?>" x="<?= 46 + $b * 50 ?>" y="<?= 178 - $h ?>" width="30" height="<?= $h ?>" rx="5" fill="url(#mbGrowGrad)"/>
+                            <?php endforeach; ?>
+                            <path class="mb-gline" pathLength="100" d="M61 126 L111 104 L161 84 L211 60 L258 34"/>
+                            <?php foreach ([[61,126],[111,104],[161,84],[211,60]] as [$dx, $dy]): ?>
+                            <circle class="mb-gdot" cx="<?= $dx ?>" cy="<?= $dy ?>" r="4"/>
+                            <?php endforeach; ?>
+                            <polygon class="mb-ghead" points="268,26 252,30 262,42" fill="#16a34a"/>
+                            <g class="mb-gbadge">
+                                <rect x="30" y="22" width="104" height="26" rx="13" fill="#dcfce7" stroke="#86efac"/>
+                                <text x="82" y="39" text-anchor="middle" font-size="12" font-weight="800" fill="#15803d" font-family="system-ui, sans-serif">+38% growth</text>
+                            </g>
+                        </svg>
+                    </div>
+                    <div class="mb-ebody">
+                        <h3>Grow with confidence</h3>
+                        <p>Add routers, sites and customers without extra admin, and use real numbers to decide where to expand next.</p>
+                        <ul>
+                            <li><i class="fas fa-check"></i> Unlimited MikroTik routers</li>
+                            <li><i class="fas fa-check"></i> Revenue and usage analytics</li>
+                        </ul>
+                    </div>
+                </article>
 
             </div>
         </div>
     </section>
-    <!-- /ADVERTS -->
+    <!-- /EARN · CONNECT · GROW -->
 
-<!-- ════════════════════════════════════════════════════════
-     IMAGE AD BANNER
-════════════════════════════════════════════════════════ -->
-<section class="kc-ad-banner">
-  <div class="container">
 
-    <div class="kc-ad-label">
-      <span class="kc-ad-sponsored">Sponsored</span>
-    </div>
+    <!-- ════════════════════════════════════════════════════════
+         PRICING — flip cards
+    ════════════════════════════════════════════════════════ -->
+    <section class="mb-price" id="pricing" aria-labelledby="mbPriceTitle">
+        <div class="container">
 
-    <div class="kc-ad-slider-wrap">
-      <div class="kc-ad-track" id="kcAdTrack">
+            <div class="mb-price-head">
+                <div class="mb-price-eyebrow" data-reveal><i class="fas fa-tags"></i> Pricing</div>
+                <h2 class="mb-price-title" data-reveal style="--rd:1" id="mbPriceTitle">Simple pricing that <em>grows with you</em></h2>
+                <p class="mb-price-sub" data-reveal style="--rd:2">No setup fees and no per-router charges. You pay for active PPPoE customers and a small share of hotspot sales, with a low monthly minimum.</p>
+            </div>
 
-        <div class="kc-ad-slide">
-          <a href="#" target="_blank" rel="noopener sponsored">
-            <img src="https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?w=1200&h=120&fit=crop&q=80" alt="Advertisement" class="kc-ad-img" loading="lazy">
-          </a>
+            <div class="mb-price-grid">
+
+                <div class="mb-flip is-featured" tabindex="0" role="button" aria-pressed="false">
+                    <div class="mb-flip-inner">
+                        <div class="mb-flip-face mb-flip-front">
+                            <span class="mb-flip-badge">Start here</span>
+                            <div class="mb-flip-ico"><i class="fas fa-wallet"></i></div>
+                            <div class="mb-flip-label">Monthly minimum</div>
+                            <div class="mb-flip-big"><small>KES</small>500</div>
+                            <div class="mb-flip-unit">per month</div>
+                            <p class="mb-flip-cap">The lowest your bill will ever be, whatever the size of your network.</p>
+                            <span class="mb-flip-hint"><i class="fas fa-rotate"></i> Flip for details</span>
+                        </div>
+                        <div class="mb-flip-face mb-flip-back">
+                            <h4>How the minimum works</h4>
+                            <ul>
+                                <li><i class="fas fa-check"></i> If your PPPoE and hotspot charges come to less than KES 500, you pay KES 500.</li>
+                                <li><i class="fas fa-check"></i> Once they pass KES 500, you just pay the usage.</li>
+                                <li><i class="fas fa-check"></i> No setup fee, no contract.</li>
+                            </ul>
+                            <div class="mb-flip-eg"><small>Example</small>10 PPPoE users = KES 250, so you pay the <b>KES 500</b> minimum.</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mb-flip" tabindex="0" role="button" aria-pressed="false">
+                    <div class="mb-flip-inner">
+                        <div class="mb-flip-face mb-flip-front">
+                            <div class="mb-flip-ico"><i class="fas fa-server"></i></div>
+                            <div class="mb-flip-label">MikroTik routers</div>
+                            <div class="mb-flip-big">Unlimited</div>
+                            <div class="mb-flip-unit">routers included</div>
+                            <p class="mb-flip-cap">Connect every MikroTik you run. Adding routers never adds to your bill.</p>
+                            <span class="mb-flip-hint"><i class="fas fa-rotate"></i> Flip for details</span>
+                        </div>
+                        <div class="mb-flip-face mb-flip-back">
+                            <h4>Every router, no extra cost</h4>
+                            <ul>
+                                <li><i class="fas fa-check"></i> Add as many MikroTik routers as you need.</li>
+                                <li><i class="fas fa-check"></i> Manage them all from one dashboard.</li>
+                                <li><i class="fas fa-check"></i> Expand to new sites without changing plans.</li>
+                            </ul>
+                            <div class="mb-flip-eg"><small>Example</small>1 router or 20 routers: <b>KES 0</b> extra.</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mb-flip" tabindex="0" role="button" aria-pressed="false">
+                    <div class="mb-flip-inner">
+                        <div class="mb-flip-face mb-flip-front">
+                            <div class="mb-flip-ico"><i class="fas fa-network-wired"></i></div>
+                            <div class="mb-flip-label">PPPoE customers</div>
+                            <div class="mb-flip-big"><small>KES</small>25</div>
+                            <div class="mb-flip-unit">per active user / month</div>
+                            <p class="mb-flip-cap">You only pay for PPPoE customers who are active that month.</p>
+                            <span class="mb-flip-hint"><i class="fas fa-rotate"></i> Flip for details</span>
+                        </div>
+                        <div class="mb-flip-face mb-flip-back">
+                            <h4>Pay per active user</h4>
+                            <ul>
+                                <li><i class="fas fa-check"></i> Charged only for users active in the month.</li>
+                                <li><i class="fas fa-check"></i> Inactive accounts cost you nothing.</li>
+                                <li><i class="fas fa-check"></i> Your bill scales up and down with your network.</li>
+                            </ul>
+                            <div class="mb-flip-eg"><small>Example</small>120 active users × KES 25 = <b>KES 3,000</b> / month.</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mb-flip" tabindex="0" role="button" aria-pressed="false">
+                    <div class="mb-flip-inner">
+                        <div class="mb-flip-face mb-flip-front">
+                            <div class="mb-flip-ico"><i class="fas fa-wifi"></i></div>
+                            <div class="mb-flip-label">Hotspot sales</div>
+                            <div class="mb-flip-big">3%</div>
+                            <div class="mb-flip-unit">of hotspot revenue</div>
+                            <p class="mb-flip-cap">We only earn when you do. No hotspot sales means no hotspot fee.</p>
+                            <span class="mb-flip-hint"><i class="fas fa-rotate"></i> Flip for details</span>
+                        </div>
+                        <div class="mb-flip-face mb-flip-back">
+                            <h4>A small share of sales</h4>
+                            <ul>
+                                <li><i class="fas fa-check"></i> 3% of the hotspot payments you collect.</li>
+                                <li><i class="fas fa-check"></i> Customers pay by M-Pesa and get online instantly.</li>
+                                <li><i class="fas fa-check"></i> No flat hotspot fee in quiet months.</li>
+                            </ul>
+                            <div class="mb-flip-eg"><small>Example</small>KES 40,000 in hotspot sales × 3% = <b>KES 1,200</b>.</div>
+                        </div>
+                    </div>
+                </div>
+
+            </div><!-- /mb-price-grid -->
+
+            <div class="mb-price-foot" data-reveal="zoom">
+                <div class="mb-formula">
+                    <small>Your monthly bill</small>
+                    <b>KES 25</b> × active PPPoE users <span class="mb-op">+</span> <b>3%</b> of hotspot revenue
+                    <span class="mb-op">·</span> minimum <b>KES 500</b> <span class="mb-op">·</span> unlimited MikroTik routers
+                </div>
+                <div class="mb-price-cta">
+                    <a href="#demo" class="is-main">Book a Demo <i class="fas fa-arrow-right"></i></a>
+                    <a href="#contact" class="is-ghost">Talk to Sales</a>
+                </div>
+            </div>
+
         </div>
-
-        <div class="kc-ad-slide">
-          <a href="#" target="_blank" rel="noopener sponsored">
-            <img src="https://images.unsplash.com/photo-1492684223066-81342ee5ff30?w=1200&h=120&fit=crop&q=80" alt="Advertisement" class="kc-ad-img" loading="lazy">
-          </a>
-        </div>
-
-        <div class="kc-ad-slide">
-          <a href="#" target="_blank" rel="noopener sponsored">
-            <img src="https://images.unsplash.com/photo-1540575467063-178a50c2df87?w=1200&h=120&fit=crop&q=80" alt="Advertisement" class="kc-ad-img" loading="lazy">
-          </a>
-        </div>
-
-        <div class="kc-ad-slide">
-          <a href="#" target="_blank" rel="noopener sponsored">
-            <img src="https://images.unsplash.com/photo-1511578314322-379afb476865?w=1200&h=120&fit=crop&q=80" alt="Advertisement" class="kc-ad-img" loading="lazy">
-          </a>
-        </div>
-
-      </div>
-
-      <button class="kc-ad-arrow kc-ad-prev" id="kcAdPrev" aria-label="Previous ad">&#8249;</button>
-      <button class="kc-ad-arrow kc-ad-next" id="kcAdNext" aria-label="Next ad">&#8250;</button>
-      <span class="kc-ad-badge">Ad</span>
-    </div>
-
-    <div class="kc-ad-dots" id="kcAdDots"></div>
-
-  </div>
-</section>
-<!-- /IMAGE AD BANNER -->
-
+    </section>
+    <!-- /PRICING -->
 
 
 
 
     <!-- ════════════════════════════════════════════════════════
-         HUB — ONE SECTION, FOUR TABS
+         JOIN — "start selling" call to action
     ════════════════════════════════════════════════════════ -->
-    <section class="kc-hub-section" id="section_hub">
-    <div class="container">
+    <section class="mb-cta" id="join" aria-labelledby="mbCtaTitle">
+        <div class="container">
+            <div class="mb-cta-panel" data-reveal="zoom">
+                <div class="mb-cta-glow" aria-hidden="true"></div>
 
-        <div class="kc-hub-header">
-            <div class="kc-eyebrow" style="margin-bottom:10px;">
-                <i class="fas fa-layer-group"></i> Explore Everything
+                <div class="mb-cta-copy">
+                    <div class="mb-cta-eyebrow" data-reveal style="--rd:1"><i class="fas fa-rocket"></i> Get started</div>
+                    <h2 class="mb-cta-title" id="mbCtaTitle" data-reveal style="--rd:2">Join <?= htmlspecialchars($siteName) ?> and <em>start selling</em> today</h2>
+                    <p class="mb-cta-sub" data-reveal style="--rd:3">Connect your MikroTik, set your packages and let customers pay by M-Pesa. Talk to us and we'll get your network set up.</p>
+                    <div class="mb-cta-btns" data-reveal style="--rd:4">
+                        <a href="<?= htmlspecialchars($appSignupUrl) ?>" class="mb-cta-main">Get Started <i class="fas fa-arrow-right"></i></a>
+                        <a href="tel:<?= htmlspecialchars($sitePhoneTel) ?>" class="mb-cta-ghost"><i class="fas fa-phone"></i> <?= htmlspecialchars($sitePhone) ?></a>
+                    </div>
+                    <ul class="mb-cta-trust" data-reveal style="--rd:5">
+                        <li><i class="fas fa-circle-check"></i> KES 500 monthly minimum</li>
+                        <li><i class="fas fa-circle-check"></i> Unlimited MikroTik routers</li>
+                        <li><i class="fas fa-circle-check"></i> 24/7 support</li>
+                    </ul>
+                </div>
+
+                <ol class="mb-cta-steps" data-reveal="line">
+                    <li class="mb-cta-step" data-reveal="right" style="--rd:3">
+                        <span class="mb-cta-num">1</span>
+                        <div><strong>Create your account</strong><small>Tell us about your network and packages.</small></div>
+                    </li>
+                    <li class="mb-cta-step" data-reveal="right" style="--rd:4">
+                        <span class="mb-cta-num">2</span>
+                        <div><strong>Connect your MikroTik</strong><small>Link your routers to the dashboard.</small></div>
+                    </li>
+                    <li class="mb-cta-step" data-reveal="right" style="--rd:5">
+                        <span class="mb-cta-num">3</span>
+                        <div><strong>Start selling</strong><small>Customers pay by M-Pesa and get online.</small></div>
+                        <span class="mb-cta-live">Live</span>
+                    </li>
+                </ol>
             </div>
-            <h2 class="kc-section-title" style="text-align:center;">
-                Discover <em>Events, Creators &amp; Music</em>
-            </h2>
         </div>
-
-        <!-- ── Tab Navigation ── -->
-        <div class="kc-tabs-nav" role="tablist">
-            <button class="kc-tab-btn active" data-tab="all-events" role="tab" aria-selected="true">
-                <i class="fas fa-calendar-alt"></i>
-                <span>All Events</span>
-                <span class="kc-tab-count"><?= count($allEvents) ?></span>
-            </button>
-            <button class="kc-tab-btn" data-tab="past-events" role="tab" aria-selected="false">
-                <i class="fas fa-history"></i>
-                <span>Past Events</span>
-                <span class="kc-tab-count"><?= count($pastEvents) ?></span>
-            </button>
-            <button class="kc-tab-btn" data-tab="creators" role="tab" aria-selected="false">
-                <i class="fas fa-users"></i>
-                <span>Creators</span>
-                <span class="kc-tab-count"><?= count($creators) ?></span>
-            </button>
-            <button class="kc-tab-btn" data-tab="music" role="tab" aria-selected="false">
-                <i class="fas fa-music"></i>
-                <span>Music</span>
-                <span class="kc-tab-count"><?= count($musicTracks) ?></span>
-            </button>
-        </div>
-
-
-        <!-- ══════════════════════════════════════════
-             TAB 1 — ALL EVENTS
-        ══════════════════════════════════════════ -->
-        <div class="kc-tab-panel active" id="tab-all-events" role="tabpanel">
-
-            <div class="kc-tab-filter-row">
-                <div class="kc-tab-filter-left">
-                    <button class="kc-filter-pill active" data-filter="all">All</button>
-                    <button class="kc-filter-pill" data-filter="upcoming">Upcoming</button>
-                    <button class="kc-filter-pill" data-filter="past">Past</button>
-                    <button class="kc-filter-pill" data-filter="free">Free</button>
-                </div>
-                <div class="kc-tab-search-wrap">
-                    <i class="fas fa-search"></i>
-                    <input type="search" id="evSearchAll" placeholder="Search events…" autocomplete="off">
-                </div>
-            </div>
-
-            <?php if (!empty($eventMonths)): ?>
-            <div class="kc-month-pills-row" id="kcMonthPillsAll">
-                <button class="kc-month-pill active" data-month="">All Months</button>
-                <?php foreach ($eventMonths as $mk => $ml): ?>
-                <button class="kc-month-pill" data-month="<?= $mk ?>"><?= htmlspecialchars($ml) ?></button>
-                <?php endforeach; ?>
-            </div>
-            <?php endif; ?>
-
-            <div class="kc-hub-grid" id="grid-all-events">
-            <?php if (empty($allEvents)): ?>
-                <div class="kc-no-results" style="grid-column:1/-1;">
-                    <div class="kc-no-icon"><i class="fas fa-calendar"></i></div>
-                    <h4>No Events Yet</h4>
-                    <p>Creators are planning something — check back soon!</p>
-                </div>
-            <?php else: ?>
-                <?php
-                $idx = 0;
-                foreach ($allEvents as $ev):
-                    $idx++;
-
-                    $evType  = $ev['ev_type'] ?? 'past';
-                    $isPast  = ($evType === 'past');
-                    $evDt    = strtotime($ev['start_date'] . ' ' . ($ev['start_time'] ?? '00:00'));
-                    $days    = daysUntil($ev['start_date']);
-                    $isToday = (date('Y-m-d', $evDt) === date('Y-m-d'));
-                    $isLive  = $isToday && !$isPast && abs(time() - $evDt) < 7200;
-                    $isFree  = ($ev['ticket_count'] > 0 && (int)$ev['min_price'] === 0);
-                    $hasTk   = $ev['ticket_count'] > 0;
-                    $evViews = (int)($ev['views'] ?? 0);
-
-                    $hiddenCls = $idx > 8 ? ' kc-item-hidden' : '';
-                    $evMonth   = date('Y-m', strtotime($ev['start_date']));
-
-                    if ($isPast)      { $badge = 'past';     $badgeTxt = '✓ Past'; }
-                    elseif ($isLive)  { $badge = 'live';     $badgeTxt = '● Live'; }
-                    else              { $badge = 'upcoming'; $badgeTxt = 'Upcoming'; }
-
-                    if ($isPast)        { $cdClass = 'ended'; $cdTxt = date('d M Y', strtotime($ev['start_date'])); }
-                    elseif ($days === 0){ $cdClass = 'soon';  $cdTxt = 'Today!'; }
-                    elseif ($days <= 7) { $cdClass = 'soon';  $cdTxt = "In {$days}d"; }
-                    else               { $cdClass = 'days';  $cdTxt = "In {$days}d"; }
-
-                    if ($isPast)    { $ctaC = 'ended';  $ctaTxt = '🏁 Ended';        $ctaHref = ''; }
-                    elseif (!$hasTk){ $ctaC = 'soon-t'; $ctaTxt = '⏳ Soon';          $ctaHref = ''; }
-                    elseif ($isFree){ $ctaC = 'free-t'; $ctaTxt = 'Reserve Free';     $ctaHref = "/ticket/{$ev['id']}/"; }
-                    else            { $ctaC = 'buy';    $ctaTxt = 'Buy · KES ' . number_format($ev['min_price']) . '+'; $ctaHref = "/ticket/{$ev['id']}/"; }
-
-                    if ($isFree)    { $priceLabel = 'FREE'; }
-                    elseif ($hasTk) { $priceLabel = 'KES ' . number_format($ev['min_price']); }
-                    else            { $priceLabel = ''; }
-
-                    $pastCardCls = $isPast ? ' kc-ev-past' : '';
-                    $freeClass   = $isFree ? ' free' : '';
-                    $banner      = htmlspecialchars('msanii/uploads/banners/' . ($ev['banner'] ?: 'default-event.jpg'));
-                    $profPic     = htmlspecialchars('msanii/uploads/' . ($ev['profile_pic'] ?: 'default.png'));
-                    $evTitle     = htmlspecialchars($ev['title']);
-                    $evVenue     = htmlspecialchars($ev['venue'] ?? 'TBD');
-                    $evUsername  = htmlspecialchars($ev['username'] ?? 'Unknown');
-                    $evDate      = date('D, d M Y', strtotime($ev['start_date']));
-                    $evTime      = date('g:i A',    strtotime($ev['start_time'] ?? '00:00'));
-                ?>
-                <div class="kc-grid-item<?= $hiddenCls ?>"
-                     data-title="<?= strtolower($evTitle) ?>"
-                     data-venue="<?= strtolower($evVenue) ?>"
-                     data-host="<?= strtolower($evUsername) ?>"
-                     data-type="<?= $evType ?>"
-                     data-month="<?= $evMonth ?>">
-                    <a href="/ticket/<?= $ev['id'] ?>/" class="kc-ev-card<?= $pastCardCls ?>">
-                    <div a href="/ticket/<?= $ev['id'] ?>/" class="kc-ev-card<?= $pastCardCls ?>">
-                        <div class="kc-ev-img">
-                            <img src="<?= $banner ?>" alt="<?= $evTitle ?>" loading="lazy"
-                                 onerror="this.src='https://placehold.co/480x270/052e64/fec411?text=Event'"/>
-                            <div class="kc-ev-img-grad"></div>
-                            <div class="kc-ev-badge <?= $badge ?>"><?= $badgeTxt ?></div>
-                            <div class="kc-ev-cd <?= $cdClass ?>"><?= $cdTxt ?></div>
-                            <?php if ($priceLabel): ?>
-                            <div class="kc-ev-price<?= $freeClass ?>"><?= $priceLabel ?></div>
-                            <?php endif; ?>
-                           <?php if ($evViews > 0 && cts_show_views($ev)): ?>
-                             <div class="kc-ev-views"><i class="fas fa-eye"></i> <?= fmtViews($evViews) ?></div>
-                           <?php endif; ?>
-                        </div>
-                        
-                        
-                        <div class="kc-ev-body">
-                            <div class="kc-ev-host">
-                                <img src="<?= $profPic ?>" alt=""
-                                     onerror="this.src='https://placehold.co/22x22/052e64/fec411?text=K'"/>
-                                <span><strong><?= $evUsername ?></strong></span>
-                            </div>
-                            <h3 class="kc-ev-title"><?= $evTitle ?></h3>
-                        </div>
-                    </a>
-                    </div>
-                </div>
-                <?php endforeach; ?>
-            <?php endif; ?>
-            </div><!-- /grid-all-events -->
-
-            <?php if (count($allEvents) > 8): ?>
-            <div class="kc-load-more-wrap">
-                <button class="kc-load-more-btn" id="lm-all-events"
-                        onclick="kcLoadMore('grid-all-events','lm-all-events')">
-                    <i class="fas fa-chevron-down"></i> Load More Events
-                </button>
-            </div>
-            <?php endif; ?>
-
-        </div><!-- /tab-all-events -->
-
-
-        <!-- ══════════════════════════════════════════
-             TAB 2 — PAST EVENTS
-        ══════════════════════════════════════════ -->
-        <div class="kc-tab-panel" id="tab-past-events" role="tabpanel">
-
-            <div class="kc-tab-filter-row">
-                <p style="font-size:14px;color:var(--g400);margin:0;">
-                    <i class="fas fa-history" style="color:var(--navy);margin-right:6px;"></i>
-                    Relive the highlights — browse all past Keychele events.
-                </p>
-                <div class="kc-tab-search-wrap">
-                    <i class="fas fa-search"></i>
-                    <input type="search" id="evSearchPast" placeholder="Search past events…" autocomplete="off">
-                </div>
-            </div>
-
-            <?php if (!empty($pastEventMonths)): ?>
-            <div class="kc-month-pills-row" id="kcMonthPillsPast">
-                <button class="kc-month-pill active" data-month="">All Months</button>
-                <?php foreach ($pastEventMonths as $mk => $ml): ?>
-                <button class="kc-month-pill" data-month="<?= $mk ?>"><?= htmlspecialchars($ml) ?></button>
-                <?php endforeach; ?>
-            </div>
-            <?php endif; ?>
-
-            <div class="kc-hub-grid" id="grid-past-events">
-            <?php if (empty($pastEvents)): ?>
-                <div class="kc-no-results" style="grid-column:1/-1;">
-                    <div class="kc-no-icon"><i class="fas fa-history"></i></div>
-                    <h4>No Past Events Yet</h4>
-                    <p>Completed events will appear here.</p>
-                </div>
-            <?php else: ?>
-                <?php
-                $idx = 0;
-                foreach ($pastEvents as $ev):
-                    $idx++;
-                    $hiddenCls  = $idx > 8 ? ' kc-item-hidden' : '';
-                    $isFree     = ($ev['ticket_count'] > 0 && (int)$ev['min_price'] === 0);
-                    $hasTk      = $ev['ticket_count'] > 0;
-                    $freeClass  = $isFree ? ' free' : '';
-                    $evMonth    = date('Y-m', strtotime($ev['start_date']));
-                    $evViews    = (int)($ev['views'] ?? 0);
-
-                    if ($isFree)    { $priceLabel = 'FREE'; }
-                    elseif ($hasTk) { $priceLabel = 'KES ' . number_format($ev['min_price']); }
-                    else            { $priceLabel = ''; }
-
-                    $banner     = htmlspecialchars('msanii/uploads/banners/' . ($ev['banner'] ?: 'default-event.jpg'));
-                    $profPic    = htmlspecialchars('msanii/uploads/' . ($ev['profile_pic'] ?: 'default.png'));
-                    $evTitle    = htmlspecialchars($ev['title']);
-                    $evVenue    = htmlspecialchars($ev['venue'] ?? 'TBD');
-                    $evUsername = htmlspecialchars($ev['username'] ?? 'Unknown');
-                    $evDate     = date('D, d M Y', strtotime($ev['start_date']));
-                    $evTime     = date('g:i A',    strtotime($ev['start_time'] ?? '00:00'));
-                    $cdTxt      = date('d M Y',    strtotime($ev['start_date']));
-                ?>
-                <div class="kc-grid-item<?= $hiddenCls ?>"
-                     data-title="<?= strtolower($evTitle) ?>"
-                     data-venue="<?= strtolower($evVenue) ?>"
-                     data-host="<?= strtolower($evUsername) ?>"
-                     data-month="<?= $evMonth ?>">
-                    <div class="kc-ev-card kc-ev-past">
-                        <div class="kc-ev-img">
-                            <img src="<?= $banner ?>" alt="<?= $evTitle ?>" loading="lazy"
-                                 onerror="this.src='https://placehold.co/480x270/052e64/fec411?text=Event'"/>
-                            <div class="kc-ev-img-grad"></div>
-                            <div class="kc-ev-badge past">✓ Past Event</div>
-                            <div class="kc-ev-cd ended"><?= $cdTxt ?></div>
-                            <?php if ($priceLabel): ?>
-                            <div class="kc-ev-price<?= $freeClass ?>" style="opacity:.75;"><?= $priceLabel ?></div>
-                            <?php endif; ?>
-                            <?php if ($evViews > 0 && cts_show_views($ev)): ?>
-                               <div class="kc-ev-views"><i class="fas fa-eye"></i> <?= fmtViews($evViews) ?></div>
-                            <?php endif; ?>
-                        </div>
-                        <div class="kc-ev-body">
-                            <h3 class="kc-ev-title"><?= $evTitle ?></h3>
-                            <div class="kc-ev-host">
-                                <img src="<?= $profPic ?>" alt=""
-                                     onerror="this.src='https://placehold.co/22x22/052e64/fec411?text=K'"/>
-                                <span>by <strong>@<?= $evUsername ?></strong></span>
-                            </div>
-                            <div class="kc-ev-meta">
-                                <div class="kc-ev-meta-row">
-                                    <i class="fas fa-calendar-check"></i>
-                                    <?= $evDate ?>
-                                </div>
-                                <div class="kc-ev-meta-row">
-                                    <i class="fas fa-clock"></i>
-                                    <?= $evTime ?>
-                                </div>
-                                <div class="kc-ev-meta-row">
-                                    <i class="fas fa-map-marker-alt"></i>
-                                    <span><?= $evVenue ?></span>
-                                </div>
-                            </div>
-                            <div class="kc-ev-sep"></div>
-                            <div class="kc-ev-cta ended">🏁 Event Ended</div>
-                        </div>
-                    </div>
-                </div>
-                <?php endforeach; ?>
-            <?php endif; ?>
-            </div><!-- /grid-past-events -->
-
-            <?php if (count($pastEvents) > 8): ?>
-            <div class="kc-load-more-wrap">
-                <button class="kc-load-more-btn" id="lm-past-events"
-                        onclick="kcLoadMore('grid-past-events','lm-past-events')">
-                    <i class="fas fa-chevron-down"></i> Load More Past Events
-                </button>
-            </div>
-            <?php endif; ?>
-
-        </div><!-- /tab-past-events -->
-
-
-        <!-- ══════════════════════════════════════════
-             TAB 3 — CREATORS
-        ══════════════════════════════════════════ -->
-        <div class="kc-tab-panel" id="tab-creators" role="tabpanel">
-
-            <div class="kc-tab-filter-row">
-                <p style="font-size:14px;color:var(--g400);margin:0;">
-                    <i class="fas fa-users" style="color:var(--navy);margin-right:6px;"></i>
-                    Discover talented creators on the Keychele platform.
-                </p>
-                <div class="kc-tab-search-wrap">
-                    <i class="fas fa-search"></i>
-                    <input type="search" id="crSearch" placeholder="Search creators…" autocomplete="off">
-                </div>
-            </div>
-
-            <div class="kc-hub-grid" id="grid-creators">
-            <?php if (empty($creators)): ?>
-                <div class="kc-no-results" style="grid-column:1/-1;">
-                    <div class="kc-no-icon"><i class="fas fa-user-plus"></i></div>
-                    <h4>No Creators Yet</h4>
-                    <p>Be the first to join Keychele!</p>
-                </div>
-            <?php else: ?>
-                <?php
-                $idx = 0;
-                foreach ($creators as $cr):
-                    $idx++;
-                    $hiddenCls = $idx > 8 ? ' kc-item-hidden' : '';
-                    $av        = htmlspecialchars('msanii/uploads/' . ($cr['profile_pic'] ?: 'default.png'));
-                    $name      = htmlspecialchars($cr['full_name']);
-                    $init      = strtoupper(substr($cr['full_name'], 0, 1));
-                    $uname     = htmlspecialchars($cr['username'] ?? '');
-                    $evC       = (int)($cr['event_count']  ?? 0);
-                    $tkC       = (int)($cr['ticket_count'] ?? 0);
-                    $sinceYr   = !empty($cr['created_at']) ? date('Y', strtotime($cr['created_at'])) : '—';
-                ?>
-                <div class="kc-grid-item<?= $hiddenCls ?>"
-                     data-name="<?= strtolower($name) ?>"
-                     data-username="<?= strtolower($uname) ?>">
-                    <div class="kc-cr-card">
-                        <div class="kc-cr-banner"></div>
-                        <div class="kc-cr-av-wrap">
-                            <img src="<?= $av ?>"
-                                 class="kc-cr-av"
-                                 alt="<?= $name ?>"
-                                 loading="lazy"
-                                 onerror="this.style.display='none';this.nextElementSibling.style.display='flex'"/>
-                            <div class="kc-cr-av-fb" style="display:none;"><?= $init ?></div>
-                        </div>
-                        <div class="kc-cr-body">
-                            <div class="kc-cr-name"><?= $name ?></div>
-                            <div class="kc-cr-uname">@<?= $uname ?></div>
-                            <div class="kc-cr-stats">
-                                <div class="kc-cr-stat">
-                                    <div class="kc-cr-stat-n"><?= $evC ?></div>
-                                    <div class="kc-cr-stat-l">Events</div>
-                                </div>
-                                <div class="kc-cr-stat">
-                                    <div class="kc-cr-stat-n"><?= $tkC ?></div>
-                                    <div class="kc-cr-stat-l">Tickets</div>
-                                </div>
-                                <div class="kc-cr-stat">
-                                    <div class="kc-cr-stat-n"><?= $sinceYr ?></div>
-                                    <div class="kc-cr-stat-l">Since</div>
-                                </div>
-                            </div>
-                            <a href="/<?= $uname ?>" class="kc-cr-cta">
-                                <i class="fas fa-user"></i> View Profile
-                            </a>
-                        </div>
-                    </div>
-                </div>
-                <?php endforeach; ?>
-            <?php endif; ?>
-            </div><!-- /grid-creators -->
-
-            <?php if (count($creators) > 8): ?>
-            <div class="kc-load-more-wrap">
-                <button class="kc-load-more-btn" id="lm-creators"
-                        onclick="kcLoadMore('grid-creators','lm-creators')">
-                    <i class="fas fa-chevron-down"></i> Load More Creators
-                </button>
-            </div>
-            <?php endif; ?>
-
-        </div><!-- /tab-creators -->
-
-
-        <!-- ══════════════════════════════════════════
-             TAB 4 — MUSIC
-        ══════════════════════════════════════════ -->
-        <div class="kc-tab-panel" id="tab-music" role="tabpanel">
-
-            <div class="kc-tab-filter-row">
-                <p style="font-size:14px;color:var(--g400);margin:0;">
-                    <i class="fas fa-headphones" style="color:var(--navy);margin-right:6px;"></i>
-                    Stream and purchase exclusive tracks from Kenyan artists.
-                </p>
-                <div class="kc-tab-search-wrap">
-                    <i class="fas fa-search"></i>
-                    <input type="search" id="muSearch" placeholder="Search tracks…" autocomplete="off">
-                </div>
-            </div>
-
-            <div class="kc-hub-grid" id="grid-music">
-            <?php if (empty($musicTracks)): ?>
-                <div class="kc-no-results" style="grid-column:1/-1;">
-                    <div class="kc-no-icon"><i class="fas fa-music"></i></div>
-                    <h4>No Tracks Yet</h4>
-                    <p>Music will appear here once creators start uploading.</p>
-                </div>
-            <?php else: ?>
-                <?php
-                $idx = 0;
-                foreach ($musicTracks as $tr):
-                    $idx++;
-                    $hiddenCls = $idx > 8 ? ' kc-item-hidden' : '';
-
-                    $coverSrc = !empty($tr['cover_art'])
-                        ? 'https://keychele.co.ke/msanii/uploads/music/covers/' . htmlspecialchars(basename($tr['cover_art']))
-                        : '';
-                    $audioSrc  = 'https://keychele.co.ke/msanii/uploads/music/audio/' . htmlspecialchars(basename($tr['audio_file']));
-                    $isNew     = !empty($tr['release_date']) && strtotime($tr['release_date']) >= strtotime('-30 days');
-                    $isHot     = (int)$tr['play_count'] >= 100;
-                    $genreIcon = getGenreIcon($tr['genre'] ?? '');
-
-                    $trTitle     = htmlspecialchars($tr['title']);
-                    $trArtist    = htmlspecialchars($tr['artist'] ?? '');
-                    $trGenre     = htmlspecialchars($tr['genre'] ?? 'Music');
-                    $trCreator   = htmlspecialchars($tr['creator_name'] ?? 'Artist');
-                    $trAlbum     = htmlspecialchars($tr['album'] ?? '');
-                    $trPrice     = number_format((float)$tr['price']);
-                    $trPlayCount = number_format((int)$tr['play_count']);
-                    $trDlCount   = number_format((int)$tr['download_count']);
-                    $trRelease   = !empty($tr['release_date']) ? date('M Y', strtotime($tr['release_date'])) : '';
-                    $trId        = (int)$tr['id'];
-                    $trIsFree    = (bool)$tr['is_free'];
-
-                    $albumHtml   = $trAlbum ? " &middot; <span style=\"font-style:italic;color:#94a3b8;\">{$trAlbum}</span>" : '';
-                    $releaseHtml = $trRelease ? "<span><i class=\"fas fa-calendar\"></i> {$trRelease}</span>" : '';
-
-                    $hotBadgeHtml = '';
-                    if ($isHot)     { $hotBadgeHtml = '<div class="kc-mu-hot-badge"><i class="fas fa-fire"></i> Hot</div>'; }
-                    elseif ($isNew) { $hotBadgeHtml = '<div class="kc-mu-new-badge"><i class="fas fa-star"></i> New</div>'; }
-
-                    if ($trIsFree) {
-                        $priceHtml = '<span class="kc-mu-free-tag"><i class="fas fa-unlock"></i> Free</span>';
-                        $ctaLabel  = 'Stream';
-                        $ctaIcon   = 'fa-play';
-                    } else {
-                        $priceHtml = "<span class=\"kc-mu-price\">KSh {$trPrice}</span>";
-                        $ctaLabel  = 'Buy';
-                        $ctaIcon   = 'fa-cart-shopping';
-                    }
-
-                    $coverHtml = $coverSrc
-                        ? "<img src=\"{$coverSrc}\" alt=\"{$trTitle}\" loading=\"lazy\"
-                                onerror=\"this.style.display='none';this.nextElementSibling.style.display='flex';\">
-                           <div class=\"kc-mu-cover-ph\" style=\"display:none;\"><i class=\"fas {$genreIcon}\"></i></div>"
-                        : "<div class=\"kc-mu-cover-ph\"><i class=\"fas {$genreIcon}\"></i></div>";
-                ?>
-                <div class="kc-grid-item<?= $hiddenCls ?>"
-                     data-title="<?= strtolower($trTitle) ?>"
-                     data-artist="<?= strtolower($trArtist) ?>">
-                    <div class="kc-mu-card">
-                        <div class="kc-mu-cover">
-                            <?= $coverHtml ?>
-                            <div class="kc-mu-badge">
-                                <i class="fas <?= $genreIcon ?>"></i>
-                                <?= $trGenre ?>
-                            </div>
-                            <?= $hotBadgeHtml ?>
-                            <button class="kc-mu-play-btn"
-                                    id="kc-playbtn-<?= $trId ?>"
-                                    data-id="<?= $trId ?>"
-                                    data-title="<?= $trTitle ?>"
-                                    data-artist="<?= $trArtist ?>"
-                                    data-src="<?= $audioSrc ?>"
-                                    data-cover="<?= $coverSrc ?>"
-                                    onclick="kcMuPlay(this); event.preventDefault();"
-                                    aria-label="Play <?= $trTitle ?>">
-                                <div class="kc-play-icon">
-                                    <i class="fas fa-play" id="kc-muicon-<?= $trId ?>"></i>
-                                </div>
-                            </button>
-                        </div>
-                        <a href="music/<?= $trId ?>" class="kc-mu-body-link" style="text-decoration:none;color:inherit;display:block;">
-                            <div class="kc-mu-body">
-                                <div class="kc-mu-artist">
-                                    <?= ($trArtist ?: $trCreator) ?><?= $albumHtml ?>
-                                </div>
-                                <div class="kc-mu-title"><?= $trTitle ?></div>
-                                <div class="kc-mu-foot">
-                                    <div><?= $priceHtml ?></div>
-                                    <div class="kc-mu-cta">
-                                        <?= $ctaLabel ?>
-                                        <i class="fas <?= $ctaIcon ?>" style="font-size:9px;"></i>
-                                    </div>
-                                </div>
-                                <div class="kc-mu-meta">
-                                    <span><i class="fas fa-play"></i> <?= $trPlayCount ?></span>
-                                    <span><i class="fas fa-download"></i> <?= $trDlCount ?></span>
-                                    <?= $releaseHtml ?>
-                                </div>
-                            </div>
-                        </a>
-                    </div>
-                </div>
-                <?php endforeach; ?>
-            <?php endif; ?>
-            </div><!-- /grid-music -->
-
-            <?php if (count($musicTracks) > 8): ?>
-            <div class="kc-load-more-wrap">
-                <button class="kc-load-more-btn" id="lm-music"
-                        onclick="kcLoadMore('grid-music','lm-music')">
-                    <i class="fas fa-chevron-down"></i> Load More Tracks
-                </button>
-            </div>
-            <?php endif; ?>
-
-        </div><!-- /tab-music -->
-
-    </div><!-- /container -->
     </section>
-    <!-- /HUB -->
+    <!-- /JOIN -->
 
 
     <!-- ════════════════════════════════════════════════════════
-         MINI AUDIO PLAYER (fixed bottom)
+         ABOUT
     ════════════════════════════════════════════════════════ -->
-    <div class="kc-mini-player" id="kcMiniPlayer">
-        <div class="kc-mp-cover" id="kcMpCover"><i class="fas fa-music"></i></div>
-        <div class="kc-mp-info">
-            <div class="kc-mp-title"  id="kcMpTitle">—</div>
-            <div class="kc-mp-artist" id="kcMpArtist">—</div>
-        </div>
-        <div class="kc-mp-controls">
-            <button class="kc-mp-ctrl" onclick="kcMuSeek(-10)" aria-label="Rewind 10s"><i class="fas fa-backward"></i></button>
-            <button class="kc-mp-ctrl play-btn" id="kcMpPlayBtn" onclick="kcMuToggle()" aria-label="Play/Pause">
-                <i class="fas fa-play" id="kcMpIcon"></i>
-            </button>
-            <button class="kc-mp-ctrl" onclick="kcMuSeek(10)" aria-label="Forward 10s"><i class="fas fa-forward"></i></button>
-        </div>
-        <div class="kc-mp-progress">
-            <div class="kc-mp-bar-wrap" onclick="kcMuScrub(event)">
-                <div class="kc-mp-bar"><div class="kc-mp-fill" id="kcMpFill"></div></div>
+    <?php
+    $waNumber = preg_replace('/\D/', '', $sitePhoneTel);
+    $waDemo   = 'https://wa.me/' . $waNumber . '?text=' . rawurlencode("Hi, I'd like a demo of $siteName.");
+    $mailDemo = 'mailto:' . $siteEmail . '?subject=' . rawurlencode("Demo request: $siteName");
+    ?>
+    <section class="mb-about" id="about" aria-labelledby="mbAboutTitle">
+        <div class="container">
+            <div class="mb-about-grid">
+                <div class="mb-about-copy">
+                    <div class="mb-sec-eyebrow" data-reveal><i class="fas fa-circle-info"></i> About us</div>
+                    <h2 class="mb-sec-title" id="mbAboutTitle" data-reveal style="--rd:1">Billing software built for <em>Kenyan ISPs</em></h2>
+                    <p class="mb-sec-sub" data-reveal style="--rd:2"><?= htmlspecialchars($siteName) ?> is built by Mecrofex Technologies in Nairobi for internet providers running hotspot and PPPoE networks.</p>
+                    <p class="mb-sec-sub" data-reveal style="--rd:3">We know how much time goes into collecting payments, chasing renewals and managing routers by hand, so we built one system that does it for you, with M-Pesa and MikroTik at its core.</p>
+                    <ul class="mb-values">
+                        <li data-reveal style="--rd:4"><i class="fas fa-location-dot"></i><div><strong>Made for the local market</strong><span>M-Pesa payments, SMS and MikroTik routers work out of the box.</span></div></li>
+                        <li data-reveal style="--rd:5"><i class="fas fa-scale-balanced"></i><div><strong>Fair, usage-based pricing</strong><span>You pay for active customers, so the cost grows only as you grow.</span></div></li>
+                        <li data-reveal style="--rd:6"><i class="fas fa-headset"></i><div><strong>Support when you need it</strong><span>Our team is available 24/7 to keep your network billing smoothly.</span></div></li>
+                    </ul>
+                </div>
+
+                <div class="mb-about-card" data-reveal="zoom" style="--rd:2">
+                    <div class="mb-about-brand">
+                        <img src="<?= htmlspecialchars($siteLogo) ?>" alt="">
+                        <div><strong><?= htmlspecialchars($siteName) ?></strong><span>by Mecrofex Technologies</span></div>
+                    </div>
+                    <div class="mb-facts">
+                        <div class="mb-fact"><i class="fas fa-map-pin"></i><strong>Nairobi, Kenya</strong><span>Local team</span></div>
+                        <div class="mb-fact"><i class="fas fa-mobile-screen-button"></i><strong>M-Pesa native</strong><span>STK push &amp; Paybill</span></div>
+                        <div class="mb-fact"><i class="fas fa-server"></i><strong>MikroTik ready</strong><span>Unlimited routers</span></div>
+                        <div class="mb-fact"><i class="fas fa-clock"></i><strong>24/7 support</strong><span>Always reachable</span></div>
+                    </div>
+                    <a class="mb-about-link" href="https://mecrofex.co.ke" target="_blank" rel="noopener">Visit Mecrofex Technologies <i class="fas fa-arrow-right"></i></a>
+                </div>
             </div>
-            <div class="kc-mp-times">
-                <span id="kcTimeCur">0:00</span>
-                <span id="kcTimeTot">0:00</span>
+        </div>
+    </section>
+    <!-- /ABOUT -->
+
+
+    <!-- ════════════════════════════════════════════════════════
+         CONTACT
+    ════════════════════════════════════════════════════════ -->
+    <section class="mb-contact" id="contact" aria-labelledby="mbContactTitle">
+        <div class="container">
+            <div class="mb-contact-head">
+                <div class="mb-sec-eyebrow" data-reveal><i class="fas fa-paper-plane"></i> Contact</div>
+                <h2 class="mb-sec-title" id="mbContactTitle" data-reveal style="--rd:1">Talk to <em>our team</em></h2>
+                <p class="mb-sec-sub" data-reveal style="--rd:2">Questions about pricing, setup or moving from another system? Reach us any way that suits you.</p>
+            </div>
+
+            <div class="mb-contact-grid">
+                <a class="mb-ccard" href="tel:<?= htmlspecialchars($sitePhoneTel) ?>" data-reveal="zoom" style="--rd:0">
+                    <i class="fas fa-phone"></i><small>Call us</small>
+                    <strong><?= htmlspecialchars($sitePhone) ?></strong><span>Talk to sales directly</span>
+                </a>
+                <a class="mb-ccard is-wa" href="<?= htmlspecialchars('https://wa.me/' . $waNumber) ?>" target="_blank" rel="noopener" data-reveal="zoom" style="--rd:1">
+                    <i class="fab fa-whatsapp"></i><small>WhatsApp</small>
+                    <strong>Chat with us</strong><span>Message us anytime</span>
+                </a>
+                <a class="mb-ccard" href="mailto:<?= htmlspecialchars($siteEmail) ?>" data-reveal="zoom" style="--rd:2">
+                    <i class="fas fa-envelope"></i><small>Email</small>
+                    <strong><?= str_replace('@', '@<wbr>', htmlspecialchars($siteEmail)) ?></strong><span>Send us your questions</span>
+                </a>
+                <div class="mb-ccard" data-reveal="zoom" style="--rd:3">
+                    <i class="fas fa-location-dot"></i><small>Office</small>
+                    <strong>Nairobi, Kenya</strong><span><?= htmlspecialchars($siteHours) ?></span>
+                </div>
+            </div>
+
+            <div class="mb-demo" id="demo" data-reveal="zoom">
+                <div>
+                    <h3>Book a demo</h3>
+                    <p>See the dashboard, vouchers and M-Pesa payments working on a quick call.</p>
+                </div>
+                <div class="mb-demo-btns">
+                    <a class="is-wa" href="<?= htmlspecialchars($waDemo) ?>" target="_blank" rel="noopener"><i class="fab fa-whatsapp"></i> Request on WhatsApp</a>
+                    <a class="is-mail" href="<?= htmlspecialchars($mailDemo) ?>"><i class="fas fa-envelope"></i> Request by email</a>
+                </div>
             </div>
         </div>
-        <button class="kc-mp-close" onclick="kcMuClose()" aria-label="Close player"><i class="fas fa-xmark"></i></button>
-    </div>
-    <audio id="kcAudio"></audio>
+    </section>
+    <!-- /CONTACT -->
+
+
 
 
     </main>
 
     <?php include_once('includes/footer.php'); ?>
 
-    <script src="js/jquery.min.js"></script>
     <script src="js/bootstrap.min.js"></script>
-    <script src="js/jquery.sticky.js"></script>
-    <script src="js/jquery.magnific-popup.min.js"></script>
-    <script src="js/magnific-popup-options.js"></script>
-    <script src="js/click-scroll.js"></script>
-    <script src="js/custom.js"></script>
 
     <script>
     /* ════════════════════════════════════════════════
-       1. HERO CAROUSEL — sync dots
+       0. PAGE MOTION — hero entrance after first paint,
+       scroll reveals for [data-reveal], top progress bar.
     ════════════════════════════════════════════════ */
     (function () {
-        var carousel = document.getElementById('kcHeroCarousel');
-        if (!carousel) return;
-        carousel.addEventListener('slid.bs.carousel', function (e) {
-            document.querySelectorAll('.kc-hero-dot').forEach(function (d, i) {
-                d.classList.toggle('active', i === e.to);
+        var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+        var hero = document.getElementById('home');
+        if (hero) {
+            requestAnimationFrame(function () {
+                requestAnimationFrame(function () { hero.classList.add('is-ready'); });
             });
+        }
+
+        var items = document.querySelectorAll('[data-reveal]');
+        if (reduce || !('IntersectionObserver' in window)) {
+            items.forEach(function (el) { el.classList.add('is-revealed'); });
+        } else {
+            var io = new IntersectionObserver(function (entries) {
+                entries.forEach(function (en) {
+                    if (!en.isIntersecting) return;
+                    (en.target.mbRevealItems || [en.target]).forEach(function (el) { el.classList.add('is-revealed'); });
+                    io.unobserve(en.target);
+                });
+            }, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
+            // A fully masked element never counts as intersecting, so masked items
+            // are watched through their (unclipped) parent and reveal as a group.
+            var groups = new Map();
+            items.forEach(function (el) {
+                var v = el.getAttribute('data-reveal');
+                if (v === 'zoom' || v === 'right' || v === 'line') { io.observe(el); return; }
+                if (!groups.has(el.parentElement)) groups.set(el.parentElement, []);
+                groups.get(el.parentElement).push(el);
+            });
+            groups.forEach(function (list, parent) { parent.mbRevealItems = list; io.observe(parent); });
+        }
+
+        // Highlight the nav link for the section currently on screen
+        var navLinks = document.querySelectorAll('.kc-nav-link[data-section]');
+        if (navLinks.length && 'IntersectionObserver' in window) {
+            var byId = {};
+            navLinks.forEach(function (a) { byId[a.dataset.section] = a; });
+            var spy = new IntersectionObserver(function (entries) {
+                entries.forEach(function (en) {
+                    if (!en.isIntersecting || !byId[en.target.id]) return;
+                    navLinks.forEach(function (a) { a.classList.remove('active'); a.removeAttribute('aria-current'); });
+                    byId[en.target.id].classList.add('active');
+                    byId[en.target.id].setAttribute('aria-current', 'location');
+                });
+            }, { rootMargin: '-45% 0px -50% 0px' });
+            Object.keys(byId).forEach(function (id) {
+                var sec = document.getElementById(id);
+                if (sec) spy.observe(sec);
+            });
+        }
+        var bar = document.getElementById('mbProgress'), ticking = false;
+        if (!bar) return;
+        function paint() {
+            var h = document.documentElement, max = h.scrollHeight - h.clientHeight;
+            bar.style.transform = 'scaleX(' + (max > 0 ? h.scrollTop / max : 0) + ')';
+            ticking = false;
+        }
+        window.addEventListener('scroll', function () {
+            if (!ticking) { ticking = true; requestAnimationFrame(paint); }
+        }, { passive: true });
+        paint();
+    })();
+
+    /* ════════════════════════════════════════════════
+       1. HERO SLIDER — the active progress bar's CSS fill
+       animation drives autoplay; pausing it pauses the slider.
+    ════════════════════════════════════════════════ */
+    (function () {
+        var hero = document.getElementById('home');
+        if (!hero) return;
+        var slides = hero.querySelectorAll('.mb-slide');
+        var bars   = hero.querySelectorAll('.mb-bar');
+        var num    = document.getElementById('mbHeroNum');
+        if (slides.length < 2) return;
+
+        var cur = 0;
+        if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+            hero.classList.add('is-static');   // no autoplay
+        }
+
+        function go(n) {
+            n = (n + slides.length) % slides.length;
+            if (n === cur) return;
+            slides[cur].classList.remove('is-active');
+            slides[cur].setAttribute('aria-hidden', 'true');
+            slides[cur].inert = true;
+            slides[n].classList.add('is-active');
+            slides[n].removeAttribute('aria-hidden');
+            slides[n].inert = false;
+            bars.forEach(function (b, i) {
+                b.classList.toggle('is-done', i < n);
+                b.classList.remove('is-active');
+            });
+            void bars[n].offsetWidth;          // restart the fill animation
+            bars[n].classList.add('is-active');
+            cur = n;
+            if (num) num.textContent = ('0' + (n + 1)).slice(-2);
+        }
+
+        bars.forEach(function (b) {
+            b.addEventListener('animationend', function () {
+                if (b.classList.contains('is-active')) go(cur + 1);
+            });
+            b.addEventListener('click', function () { go(+b.dataset.go); });
+        });
+        hero.querySelectorAll('[data-dir]').forEach(function (btn) {
+            btn.addEventListener('click', function () { go(cur + (+btn.dataset.dir)); });
+        });
+
+        // Pause while hovered, focused, or the tab is in the background
+        var holds = {};
+        function hold(reason, on) {
+            holds[reason] = on;
+            hero.classList.toggle('is-paused', !!(holds.hover || holds.focus || holds.hidden));
+        }
+        hero.addEventListener('mouseenter', function () { hold('hover', true); });
+        hero.addEventListener('mouseleave', function () { hold('hover', false); });
+        hero.addEventListener('focusin',    function () { hold('focus', true); });
+        hero.addEventListener('focusout',   function (e) { if (!hero.contains(e.relatedTarget)) hold('focus', false); });
+        document.addEventListener('visibilitychange', function () { hold('hidden', document.hidden); });
+
+        hero.addEventListener('keydown', function (e) {
+            if (e.key === 'ArrowLeft')  go(cur - 1);
+            if (e.key === 'ArrowRight') go(cur + 1);
+        });
+
+        var x0 = null;
+        hero.addEventListener('touchstart', function (e) { x0 = e.touches[0].clientX; }, { passive: true });
+        hero.addEventListener('touchend', function (e) {
+            if (x0 === null) return;
+            var dx = e.changedTouches[0].clientX - x0;
+            if (Math.abs(dx) > 50) go(cur + (dx < 0 ? 1 : -1));
+            x0 = null;
         });
     })();
 
-    function kcGotoSlide(idx) {
-        var el = document.getElementById('kcHeroCarousel');
-        if (!el) return;
-        bootstrap.Carousel.getOrCreateInstance(el).to(idx);
-    }
-
-
     /* ════════════════════════════════════════════════
-       2. TAB SWITCHING
-    ════════════════════════════════════════════════ */
-    document.querySelectorAll('.kc-tab-btn').forEach(function (btn) {
-        btn.addEventListener('click', function () {
-            document.querySelectorAll('.kc-tab-btn').forEach(function (b) {
-                b.classList.remove('active');
-                b.setAttribute('aria-selected', 'false');
-            });
-            document.querySelectorAll('.kc-tab-panel').forEach(function (p) {
-                p.classList.remove('active');
-            });
-            this.classList.add('active');
-            this.setAttribute('aria-selected', 'true');
-            var panel = document.getElementById('tab-' + this.dataset.tab);
-            if (panel) {
-                panel.classList.add('active');
-                panel.querySelectorAll('.kc-grid-item:not(.kc-item-hidden):not(.kc-in-view)').forEach(function (el) {
-                    kcObserver.observe(el);
-                });
-            }
-        });
-    });
-
-
-    /* ════════════════════════════════════════════════
-       3. LAZY LOADING — IntersectionObserver
-    ════════════════════════════════════════════════ */
-    var kcObserver = new IntersectionObserver(function (entries) {
-        entries.forEach(function (entry) {
-            if (entry.isIntersecting) {
-                entry.target.classList.add('kc-in-view');
-                kcObserver.unobserve(entry.target);
-            }
-        });
-    }, { threshold: 0.06, rootMargin: '0px 0px -10px 0px' });
-
-    document.querySelectorAll('.kc-grid-item:not(.kc-item-hidden)').forEach(function (el) {
-        kcObserver.observe(el);
-    });
-
-
-    /* ════════════════════════════════════════════════
-       4. LOAD MORE
-    ════════════════════════════════════════════════ */
-    function kcLoadMore(gridId, btnId) {
-        var grid = document.getElementById(gridId);
-        var btn  = document.getElementById(btnId);
-        if (!grid) return;
-        Array.from(grid.querySelectorAll('.kc-item-hidden')).slice(0, 8).forEach(function (el) {
-            el.classList.remove('kc-item-hidden');
-            kcObserver.observe(el);
-        });
-        if (!grid.querySelectorAll('.kc-item-hidden').length && btn) {
-            btn.classList.add('hidden');
-        }
-    }
-
-
-    /* ════════════════════════════════════════════════
-       5. ALL EVENTS — search + type + month filter
-    ════════════════════════════════════════════════ */
-    var evFilterAll = 'all';
-    var evMonthAll  = '';
-
-    function applyAllEventsFilter() {
-        var q = (document.getElementById('evSearchAll').value || '').toLowerCase().trim();
-        document.querySelectorAll('#grid-all-events .kc-grid-item').forEach(function (item) {
-            var matchType = true, matchMonth = true, matchSearch = true;
-
-            if (evFilterAll !== 'all') {
-                if (evFilterAll === 'free') {
-                    var priceEl = item.querySelector('.kc-ev-price');
-                    matchType = priceEl && priceEl.textContent.trim() === 'FREE';
-                } else {
-                    matchType = (item.dataset.type === evFilterAll);
-                }
-            }
-            if (evMonthAll) {
-                matchMonth = (item.dataset.month || '').startsWith(evMonthAll);
-            }
-            if (q) {
-                matchSearch = ['title','venue','host'].some(function (f) {
-                    return (item.dataset[f] || '').includes(q);
-                });
-            }
-
-            var show = matchType && matchMonth && matchSearch;
-            item.style.display = show ? '' : 'none';
-            if (show && !item.classList.contains('kc-in-view') && !item.classList.contains('kc-item-hidden')) {
-                kcObserver.observe(item);
-            }
-        });
-    }
-
-    document.querySelectorAll('.kc-filter-pill').forEach(function (pill) {
-        pill.addEventListener('click', function () {
-            document.querySelectorAll('.kc-filter-pill').forEach(function (p) { p.classList.remove('active'); });
-            this.classList.add('active');
-            evFilterAll = this.dataset.filter;
-            applyAllEventsFilter();
-        });
-    });
-
-    document.querySelectorAll('#kcMonthPillsAll .kc-month-pill').forEach(function (pill) {
-        pill.addEventListener('click', function () {
-            document.querySelectorAll('#kcMonthPillsAll .kc-month-pill').forEach(function (p) { p.classList.remove('active'); });
-            this.classList.add('active');
-            evMonthAll = this.dataset.month;
-            applyAllEventsFilter();
-        });
-    });
-
-    document.getElementById('evSearchAll') &&
-        document.getElementById('evSearchAll').addEventListener('input', applyAllEventsFilter);
-
-
-    /* ════════════════════════════════════════════════
-       6. PAST EVENTS — search + month filter
-    ════════════════════════════════════════════════ */
-    var evMonthPast = '';
-
-    function applyPastEventsFilter() {
-        var q = (document.getElementById('evSearchPast').value || '').toLowerCase().trim();
-        document.querySelectorAll('#grid-past-events .kc-grid-item').forEach(function (item) {
-            var matchMonth = true, matchSearch = true;
-            if (evMonthPast) {
-                matchMonth = (item.dataset.month || '').startsWith(evMonthPast);
-            }
-            if (q) {
-                matchSearch = ['title','venue','host'].some(function (f) {
-                    return (item.dataset[f] || '').includes(q);
-                });
-            }
-            var show = matchMonth && matchSearch;
-            item.style.display = show ? '' : 'none';
-            if (show && !item.classList.contains('kc-in-view') && !item.classList.contains('kc-item-hidden')) {
-                kcObserver.observe(item);
-            }
-        });
-    }
-
-    document.querySelectorAll('#kcMonthPillsPast .kc-month-pill').forEach(function (pill) {
-        pill.addEventListener('click', function () {
-            document.querySelectorAll('#kcMonthPillsPast .kc-month-pill').forEach(function (p) { p.classList.remove('active'); });
-            this.classList.add('active');
-            evMonthPast = this.dataset.month;
-            applyPastEventsFilter();
-        });
-    });
-
-    document.getElementById('evSearchPast') &&
-        document.getElementById('evSearchPast').addEventListener('input', applyPastEventsFilter);
-
-
-    /* ════════════════════════════════════════════════
-       7. CREATORS SEARCH
-    ════════════════════════════════════════════════ */
-    document.getElementById('crSearch') &&
-        document.getElementById('crSearch').addEventListener('input', function () {
-            var q = this.value.toLowerCase().trim();
-            document.querySelectorAll('#grid-creators .kc-grid-item').forEach(function (item) {
-                var show = !q || ['name','username'].some(function (f) { return (item.dataset[f] || '').includes(q); });
-                item.style.display = show ? '' : 'none';
-                if (show && !item.classList.contains('kc-in-view')) kcObserver.observe(item);
-            });
-        });
-
-
-    /* ════════════════════════════════════════════════
-       8. MUSIC SEARCH
-    ════════════════════════════════════════════════ */
-    document.getElementById('muSearch') &&
-        document.getElementById('muSearch').addEventListener('input', function () {
-            var q = this.value.toLowerCase().trim();
-            document.querySelectorAll('#grid-music .kc-grid-item').forEach(function (item) {
-                var show = !q || ['title','artist'].some(function (f) { return (item.dataset[f] || '').includes(q); });
-                item.style.display = show ? '' : 'none';
-                if (show && !item.classList.contains('kc-in-view')) kcObserver.observe(item);
-            });
-        });
-
-
-    /* ════════════════════════════════════════════════
-       9. MINI AUDIO PLAYER
+       2. LIVE DASHBOARD PREVIEW — sample data, animates
+       when scrolled into view, then "ticks" while visible.
     ════════════════════════════════════════════════ */
     (function () {
-        var audio    = document.getElementById('kcAudio');
-        var player   = document.getElementById('kcMiniPlayer');
-        var fill     = document.getElementById('kcMpFill');
-        var mpIcon   = document.getElementById('kcMpIcon');
-        var timeCur  = document.getElementById('kcTimeCur');
-        var timeTot  = document.getElementById('kcTimeTot');
-        var activeId = null;
+        var root = document.getElementById('mbDash');
+        if (!root) return;
+        var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        var fmt = function (n, dec) {
+            return Number(n).toLocaleString('en-KE', { minimumFractionDigits: dec || 0, maximumFractionDigits: dec || 0 });
+        };
+        var eat = function (d, opts) { return d.toLocaleString('en-KE', Object.assign({ timeZone: 'Africa/Nairobi' }, opts)); };
 
-        function fmt(s) {
-            s = Math.floor(s) || 0;
-            return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+        // ── Header clock ──
+        var nowEl = document.getElementById('mbDashNow');
+        function clock() {
+            nowEl.textContent = eat(new Date(), { month: 'long', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' }) + ' EAT';
+        }
+        clock();
+
+        // ── Revenue chart (last 14 days, smooth curve) ──
+        var revenue = [31200, 28400, 35800, 33100, 39500, 42300, 38800, 36200, 41900, 45600, 43100, 47800, 46200, 48750];
+        (function buildChart() {
+            var svg = document.getElementById('mbChart'), ns = 'http://www.w3.org/2000/svg';
+            var W = 600, H = 220, top = 14, bot = 10, left = 34;
+            var max = 60000, min = 0;
+            var pts = revenue.map(function (v, i) {
+                return [left + i * (W - left) / (revenue.length - 1), top + (1 - (v - min) / (max - min)) * (H - top - bot)];
+            });
+            var d = 'M' + pts[0].join(',');
+            for (var i = 1; i < pts.length; i++) {        // Catmull-Rom → cubic Bézier
+                var p0 = pts[i - 2] || pts[i - 1], p1 = pts[i - 1], p2 = pts[i], p3 = pts[i + 1] || p2;
+                d += ' C' + (p1[0] + (p2[0] - p0[0]) / 6) + ',' + (p1[1] + (p2[1] - p0[1]) / 6) + ' ' +
+                            (p2[0] - (p3[0] - p1[0]) / 6) + ',' + (p2[1] - (p3[1] - p1[1]) / 6) + ' ' + p2.join(',');
+            }
+            var last = pts[pts.length - 1];
+            var html = '<defs><linearGradient id="mbChartFill" x1="0" y1="0" x2="0" y2="1">' +
+                       '<stop offset="0" stop-color="#38bdf8" stop-opacity=".35"/><stop offset="1" stop-color="#38bdf8" stop-opacity="0"/></linearGradient></defs><g class="mb-chart-grid">';
+            [0, 20000, 40000, 60000].forEach(function (v) {
+                var y = top + (1 - v / max) * (H - top - bot);
+                html += '<line x1="' + left + '" x2="' + W + '" y1="' + y + '" y2="' + y + '"/>' +
+                        '<text x="0" y="' + (y + 3) + '">' + (v / 1000) + 'K</text>';
+            });
+            html += '</g><path class="mb-chart-area" fill="url(#mbChartFill)" d="' + d + ' L' + last[0] + ',' + (H - bot) + ' L' + left + ',' + (H - bot) + ' Z"/>' +
+                    '<path class="mb-chart-line" d="' + d + '"/>' +
+                    '<circle class="mb-chart-halo" cx="' + last[0] + '" cy="' + last[1] + '" r="6"/>' +
+                    '<circle class="mb-chart-dot" cx="' + last[0] + '" cy="' + last[1] + '" r="6"/>';
+            svg.innerHTML = html;
+            var line = svg.querySelector('.mb-chart-line');
+            line.style.setProperty('--len', Math.ceil(line.getTotalLength()));
+
+            var x = document.getElementById('mbChartX'), labels = '';
+            [13, 10, 7, 3, 0].forEach(function (k) {   // oldest → today, left to right
+                labels += '<span>' + (k === 0 ? 'Today' : eat(new Date(Date.now() - k * 864e5), { month: 'short', day: 'numeric' })) + '</span>';
+            });
+            x.innerHTML = labels;
+        })();
+
+        // ── Payments feed ──
+        var names = ['Brian K.', 'Faith W.', 'Kevin O.', 'Mercy A.', 'Dennis M.', 'Grace N.', 'Collins K.', 'Purity J.', 'Victor O.', 'Esther C.', 'Samuel K.', 'Joy M.'];
+        var plans = [['Hotspot 1 Hour', 20], ['Hotspot 1 Day', 50], ['Hotspot 1 Day', 50], ['Hotspot 1 Week', 300], ['PPPoE 10 Mbps', 1500], ['PPPoE 20 Mbps', 2500]];
+        var feed = document.getElementById('mbFeed');
+        var pick = function (a) { return a[Math.floor(Math.random() * a.length)]; };
+        function paymentRow(minsAgo, isNew) {
+            var plan = pick(plans), phone = '07' + Math.floor(10 + Math.random() * 89) + ' ••• ' + Math.floor(100 + Math.random() * 899);
+            var li = document.createElement('li');
+            if (isNew) li.className = 'is-new';
+            li.innerHTML = '<span class="mb-feed-ico"><i class="fas fa-check"></i></span>' +
+                '<span class="mb-feed-txt"><strong>' + pick(names) + ' · ' + plan[0] + '</strong>' +
+                '<span>' + phone + ' · ' + eat(new Date(Date.now() - minsAgo * 6e4), { hour: '2-digit', minute: '2-digit' }) + '</span></span>' +
+                '<span class="mb-feed-amt">+' + fmt(plan[1]) + '</span>';
+            return { li: li, amount: plan[1] };
+        }
+        [1, 3, 6, 9].forEach(function (m) { feed.appendChild(paymentRow(m).li); });
+
+        // ── Count-up numbers ──
+        var earnEl = document.getElementById('mbEarnToday'), earnToday = +earnEl.dataset.count;
+        function countUp() {
+            var els = root.querySelectorAll('[data-count]');
+            if (reduce) {
+                els.forEach(function (el) { el.textContent = fmt(el.dataset.count, +el.dataset.dec || 0); });
+                return;
+            }
+            var t0 = performance.now(), dur = 1600;
+            (function frame(t) {
+                var p = Math.min(1, (t - t0) / dur), e = 1 - Math.pow(1 - p, 3);
+                els.forEach(function (el) { el.textContent = fmt(el.dataset.count * e, +el.dataset.dec || 0); });
+                if (p < 1) requestAnimationFrame(frame);
+            })(t0);
         }
 
-        window.kcMuPlay = function (btn) {
-            var id     = btn.dataset.id;
-            var src    = btn.dataset.src;
-            var title  = btn.dataset.title;
-            var artist = btn.dataset.artist;
-            var cover  = btn.dataset.cover;
+        // ── Live "online right now" ──
+        var online = 247;
+        function setOnline(n) { root.querySelectorAll('[data-live-online]').forEach(function (el) { el.textContent = fmt(n); }); }
 
-            if (activeId === id) { kcMuToggle(); return; }
-
-            if (activeId) {
-                var prevIcon = document.getElementById('kc-muicon-' + activeId);
-                if (prevIcon) prevIcon.className = 'fas fa-play';
-                var prevBtn = document.getElementById('kc-playbtn-' + activeId);
-                if (prevBtn) prevBtn.classList.remove('playing');
+        // ── Live loop: only while the section is on screen and the tab is visible ──
+        var onScreen = false, started = false, ticks = 0;
+        setInterval(function () {
+            if (!started || !onScreen || document.hidden) return;
+            ticks++;
+            clock();
+            online = Math.max(200, online + Math.round(Math.random() * 6 - 3));
+            setOnline(online);
+            if (ticks % 2 === 0) {                       // new payment every ~3.6s
+                var row = paymentRow(0, true);
+                feed.insertBefore(row.li, feed.firstChild);
+                if (feed.children.length > 4) feed.removeChild(feed.lastChild);
+                setTimeout(function () { row.li.classList.remove('is-new'); }, 2400);
+                earnToday += row.amount;
+                earnEl.textContent = fmt(earnToday);
+                earnEl.classList.add('is-bump');
+                setTimeout(function () { earnEl.classList.remove('is-bump'); }, 900);
             }
+        }, 1800);
 
-            activeId  = id;
-            audio.src = src;
-            audio.play().catch(function () {});
-
-            var thisIcon = document.getElementById('kc-muicon-' + id);
-            if (thisIcon) thisIcon.className = 'fas fa-pause';
-            btn.classList.add('playing');
-            mpIcon.className = 'fas fa-pause';
-
-            document.getElementById('kcMpTitle').textContent  = title;
-            document.getElementById('kcMpArtist').textContent = artist;
-
-            var coverEl = document.getElementById('kcMpCover');
-            coverEl.innerHTML = cover
-                ? '<img src="' + cover + '" alt="cover">'
-                : '<i class="fas fa-music"></i>';
-
-            player.classList.add('show');
-        };
-
-        window.kcMuToggle = function () {
-            if (!audio.src) return;
-            if (audio.paused) {
-                audio.play();
-                mpIcon.className = 'fas fa-pause';
-                if (activeId) {
-                    var ic = document.getElementById('kc-muicon-' + activeId);
-                    if (ic) ic.className = 'fas fa-pause';
-                }
-            } else {
-                audio.pause();
-                mpIcon.className = 'fas fa-play';
-                if (activeId) {
-                    var ic = document.getElementById('kc-muicon-' + activeId);
-                    if (ic) ic.className = 'fas fa-play';
-                }
+        new IntersectionObserver(function (entries) {
+            onScreen = entries[0].isIntersecting;
+            if (onScreen && !started) {
+                started = true;
+                root.classList.add('is-in');
+                countUp();
+                setOnline(online);
             }
-        };
+        }, { threshold: 0.2 }).observe(root);
+    })();
 
-        window.kcMuSeek = function (s) {
-            audio.currentTime = Math.max(0, Math.min(audio.duration || 0, audio.currentTime + s));
-        };
+    /* ════════════════════════════════════════════════
+       2C. PRICING FLIP CARDS — tap/Enter/Space flips (hover
+       flips on desktop via CSS); first card "peeks" once on reveal.
+    ════════════════════════════════════════════════ */
+    (function () {
+        var sec = document.getElementById('pricing');
+        if (!sec) return;
+        var cards = sec.querySelectorAll('.mb-flip');
 
-        window.kcMuScrub = function (e) {
-            var rect = e.currentTarget.getBoundingClientRect();
-            audio.currentTime = ((e.clientX - rect.left) / rect.width) * (audio.duration || 0);
-        };
-
-        window.kcMuClose = function () {
-            audio.pause();
-            player.classList.remove('show');
-            if (activeId) {
-                var ic = document.getElementById('kc-muicon-' + activeId);
-                if (ic) ic.className = 'fas fa-play';
-                var btn = document.getElementById('kc-playbtn-' + activeId);
-                if (btn) btn.classList.remove('playing');
-            }
-            activeId = null;
-            audio.src = '';
-            fill.style.width = '0%';
-            timeCur.textContent = '0:00';
-            timeTot.textContent = '0:00';
-        };
-
-        audio.addEventListener('timeupdate', function () {
-            if (!audio.duration) return;
-            fill.style.width = (audio.currentTime / audio.duration * 100) + '%';
-            timeCur.textContent = fmt(audio.currentTime);
+        function toggle(card) {
+            var on = card.classList.toggle('is-flipped');
+            card.setAttribute('aria-pressed', on ? 'true' : 'false');
+        }
+        cards.forEach(function (card) {
+            card.addEventListener('click', function () { toggle(card); });
+            card.addEventListener('keydown', function (e) {
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(card); }
+            });
+            // on hover devices the CSS hover flip shows the back; un-pin on leave
+            card.addEventListener('mouseleave', function () {
+                if (window.matchMedia('(hover: hover)').matches && card.classList.contains('is-flipped')) toggle(card);
+            });
         });
 
-        audio.addEventListener('loadedmetadata', function () {
-            timeTot.textContent = fmt(audio.duration);
-        });
+        new IntersectionObserver(function (entries, obs) {
+            if (!entries[0].isIntersecting) return;
+            obs.disconnect();
+            sec.classList.add('is-in');
+            if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+            setTimeout(function () {
+                cards[0].classList.add('is-peek');
+                setTimeout(function () { cards[0].classList.remove('is-peek'); }, 1200);
+            }, 1100);
+        }, { threshold: 0.25 }).observe(sec);
+    })();
 
-        audio.addEventListener('ended', function () {
-            mpIcon.className = 'fas fa-play';
-            if (activeId) {
-                var ic = document.getElementById('kc-muicon-' + activeId);
-                if (ic) ic.className = 'fas fa-play';
-                var btn = document.getElementById('kc-playbtn-' + activeId);
-                if (btn) btn.classList.remove('playing');
-            }
-            fill.style.width = '0%';
+    /* ════════════════════════════════════════════════
+       2A. FEATURES — reveal + start illustrations on scroll
+    ════════════════════════════════════════════════ */
+    (function () {
+        var sec = document.getElementById('features');
+        if (!sec) return;
+        new IntersectionObserver(function (entries, obs) {
+            if (!entries[0].isIntersecting) return;
+            obs.disconnect();
+            sec.classList.add('is-in');
+        }, { threshold: 0.15 }).observe(sec);
+    })();
+
+    /* ════════════════════════════════════════════════
+       2A2. EARN · CONNECT · GROW — reveal; coins drop one by
+       one onto the stack and the phone total counts up.
+       (Connect + Grow drawings are pure CSS loops.)
+    ════════════════════════════════════════════════ */
+    (function () {
+        var sec = document.getElementById('earn');
+        if (!sec) return;
+        var coins = Array.prototype.slice.call(sec.querySelectorAll('.mb-coin'));
+        var plus  = document.getElementById('mbCoinPlus');
+        var total = document.getElementById('mbCoinTotal');
+        var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        var onScreen = false, running = false, VALUE = 50;
+        var show = function (n) { total.textContent = 'KES ' + n.toLocaleString('en-KE'); };
+
+        function drop(i, done) {
+            var c = coins[i];
+            c.style.opacity = 1;
+            c.animate([
+                { transform: 'translateY(-230px)', easing: 'cubic-bezier(.55,0,1,.45)' },
+                { transform: 'translateY(0)',      offset: .55, easing: 'ease-out' },
+                { transform: 'translateY(-14px)',  offset: .72, easing: 'ease-in' },
+                { transform: 'translateY(0)',      offset: .86, easing: 'ease-out' },
+                { transform: 'translateY(-3px)',   offset: .93, easing: 'ease-in' },
+                { transform: 'translateY(0)' }
+            ], { duration: 800, fill: 'both' });
+            setTimeout(function () {                    // coin lands
+                show((i + 1) * VALUE);
+                plus.setAttribute('y', 162 - i * 12);
+                plus.animate([
+                    { opacity: 0, transform: 'translateY(6px)' },
+                    { opacity: 1, transform: 'translateY(0)', offset: .25 },
+                    { opacity: 0, transform: 'translateY(-14px)' }
+                ], { duration: 900, easing: 'ease-out' });
+                done && done();
+            }, 440);
+        }
+
+        function cycle() {
+            if (!onScreen || document.hidden) { running = false; return; }
+            running = true;
+            coins.forEach(function (c) {           // clear last cycle's held animations
+                c.getAnimations().forEach(function (a) { a.cancel(); });
+                c.style.opacity = 0;
+            });
+            show(0);
+            var i = 0;
+            (function next() {
+                if (i >= coins.length) {                // hold, fade the stack, repeat
+                    setTimeout(function () {
+                        coins.forEach(function (c) { c.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 400, fill: 'forwards' }); });
+                        setTimeout(cycle, 600);
+                    }, 1800);
+                    return;
+                }
+                drop(i++, function () { setTimeout(next, 260); });
+            })();
+        }
+
+        if (reduce) {
+            coins.forEach(function (c) { c.style.opacity = 1; });
+            show(coins.length * VALUE);
+        }
+
+        new IntersectionObserver(function (entries) {
+            onScreen = entries[0].isIntersecting;
+            if (onScreen) sec.classList.add('is-in');
+            if (onScreen && !running && !reduce) cycle();
+        }, { threshold: 0.2 }).observe(sec);
+        document.addEventListener('visibilitychange', function () {
+            if (!document.hidden && onScreen && !running && !reduce) cycle();
         });
     })();
+
     </script>
 
 </body>

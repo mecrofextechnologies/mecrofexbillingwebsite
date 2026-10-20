@@ -1,10 +1,5 @@
 *.zip
 *.mp4
 *.log
-vendor/
-node_modules/
-uploads/
 .env
-# Payment credentials — never commit (see admin011/database/daraja.ini.example)
-daraja.ini
-keychele_secrets/
+node_modules/

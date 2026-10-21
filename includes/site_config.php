@@ -8,7 +8,7 @@ $sitePhoneTel  = $sitePhoneTel  ?? '+254791011130';
 $siteEmail     = $siteEmail     ?? 'sales@mecrofexbilling.com';
 $siteHours     = $siteHours     ?? 'Mon–Fri, 10:00–19:00';
 $siteLogo      = $siteLogo      ?? 'https://ik.imagekit.io/mecrofextech/mecrofexbillinglogo.jpeg?tr=w-256';   // ImageKit-resized (original ~99 KB)
-$appLoginUrl   = $appLoginUrl   ?? '/login';   // link to the billing system's client portal
+$appLoginUrl   = $appLoginUrl   ?? 'https://app.mecrofexbilling.com/login';   // billing system's client portal (own subdomain -- a bare "/login" 404s on this site)
 // Footer social links: Bootstrap Icons name => URL. Empty URLs are skipped.
 $siteSocials   = $siteSocials   ?? [
     'twitter-x' => '',
@@ -26,4 +26,4 @@ if (!function_exists('mb_section_url')) {
     }
 }
 
-$appSignupUrl  = $appSignupUrl  ?? mb_section_url('contact');   // "Get Started" button: point at the billing system's sign-up page when it exists
+$appSignupUrl  = $appSignupUrl  ?? 'https://app.mecrofexbilling.com/register';   // "Get Started" button: the real ISP sign-up page

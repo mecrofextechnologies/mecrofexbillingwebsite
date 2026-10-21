@@ -349,7 +349,8 @@
             <li><a href="<?= mb_section_url('about') ?>">About Us</a></li>
             <li><a href="<?= mb_section_url('contact') ?>">Contact</a></li>
             <li><a href="<?= mb_section_url('demo') ?>">Book a Demo</a></li>
-            <li><a href="<?= htmlspecialchars($appLoginUrl) ?>">Client Login</a></li>
+            <li><a href="<?= htmlspecialchars($appSignupUrl) ?>">Register</a></li>
+            <li><a href="<?= htmlspecialchars($appLoginUrl) ?>" class="js-client-login">Client Login</a></li>
         </ul>
     </div>
 
@@ -457,5 +458,64 @@
     if(link)  link.addEventListener('click', function(e){ e.preventDefault(); modal.style.display='block'; });
     if(close) close.addEventListener('click', function(){ modal.style.display='none'; });
     window.addEventListener('click', function(e){ if(e.target===modal) modal.style.display='none'; });
+})();
+</script>
+
+<!-- ══════════════════════════════════════════════════
+     CLIENT LOGIN MODAL — each ISP has its own subdomain
+     (e.g. medolistnet.mecrofexbilling.com), so "Client Login"
+     asks which one before sending them there.
+══════════════════════════════════════════════════ -->
+<div class="mecrofex-modal" id="client-login-modal">
+    <div class="mecrofex-modal-content">
+        <span class="mecrofex-close" id="client-login-close">&times;</span>
+        <h4 class="text-white mb-2">Client Login</h4>
+        <p style="color:rgba(255,255,255,.6);margin-bottom:20px;">Enter your ISP's name to go to its login page.</p>
+        <form id="client-login-form">
+            <input type="text" id="client-login-ispname" placeholder="e.g. Medolistnet" autocomplete="off"
+                   style="width:100%;padding:12px 14px;border-radius:10px;border:1.5px solid var(--bl-accent,#38bdf8);background:rgba(255,255,255,.08);color:#fff;font-size:14px;margin-bottom:8px;">
+            <p id="client-login-error" style="color:#fca5a5;font-size:12.5px;margin-bottom:10px;display:none;">Please enter your ISP's name.</p>
+            <button type="submit" class="mecrofex-btn mecrofex-website-btn" style="width:100%;border:none;cursor:pointer;">
+                <i class="bi bi-arrow-right-circle me-2"></i> Continue
+            </button>
+        </form>
+    </div>
+</div>
+
+<script>
+(function(){
+    const BILLING_DOMAIN = 'mecrofexbilling.com';
+    const triggers = document.querySelectorAll('.js-client-login');
+    const modal    = document.getElementById('client-login-modal');
+    const closeBtn = document.getElementById('client-login-close');
+    const form     = document.getElementById('client-login-form');
+    const input    = document.getElementById('client-login-ispname');
+    const error    = document.getElementById('client-login-error');
+    if (!triggers.length || !modal || !form || !input) return;
+
+    triggers.forEach(function(t){
+        t.addEventListener('click', function(e){
+            e.preventDefault();
+            error.style.display = 'none';
+            modal.style.display = 'block';
+            input.value = '';
+            setTimeout(function(){ input.focus(); }, 50);
+        });
+    });
+    closeBtn.addEventListener('click', function(){ modal.style.display = 'none'; });
+    window.addEventListener('click', function(e){ if (e.target === modal) modal.style.display = 'none'; });
+
+    form.addEventListener('submit', function(e){
+        e.preventDefault();
+        const slug = input.value.toLowerCase().trim()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-+|-+$/g, '');
+        if (!slug) {
+            error.style.display = 'block';
+            input.focus();
+            return;
+        }
+        window.location.href = 'https://' + slug + '.' + BILLING_DOMAIN + '/login';
+    });
 })();
 </script>

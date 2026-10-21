@@ -58,17 +58,26 @@ $heroSlides = [
 
     <title><?= htmlspecialchars($siteName) ?> — ISP &amp; Hotspot Billing with M-Pesa in Kenya</title>
     <meta name="description" content="Billing for internet providers: hotspot vouchers, PPPoE, automatic M-Pesa payments, auto reconnection and MikroTik integration. From KES 500 a month.">
-    <meta name="keywords" content="ISP billing Kenya, hotspot billing, PPPoE billing, MikroTik billing, M-Pesa billing system, hotspot vouchers">
+    <meta name="keywords" content="ISP billing Kenya, hotspot billing software, PPPoE billing, MikroTik billing system, M-Pesa billing system, hotspot vouchers, internet service provider billing software, WiFi hotspot billing Kenya, captive portal billing, prepaid internet billing, router billing software, estate WiFi billing, campus WiFi billing">
     <meta name="author" content="Mecrofex Technologies">
     <meta name="robots" content="index, follow">
+    <link rel="canonical" href="https://mecrofexbilling.com/">
 
     <meta property="og:title" content="<?= htmlspecialchars($siteName) ?> — ISP &amp; Hotspot Billing with M-Pesa">
     <meta property="og:description" content="Hotspot vouchers, PPPoE, automatic M-Pesa payments and MikroTik integration in one dashboard.">
     <meta property="og:type" content="website">
+    <meta property="og:url" content="https://mecrofexbilling.com/">
     <meta property="og:image" content="<?= htmlspecialchars($siteLogo) ?>">
+    <meta property="og:image:width" content="256">
+    <meta property="og:image:height" content="256">
     <meta property="og:site_name" content="<?= htmlspecialchars($siteName) ?>">
+    <meta property="og:locale" content="en_KE">
     <meta name="twitter:card" content="summary">
     <meta name="twitter:title" content="<?= htmlspecialchars($siteName) ?> — ISP &amp; Hotspot Billing">
+    <meta name="twitter:description" content="Hotspot vouchers, PPPoE, automatic M-Pesa payments and MikroTik integration in one dashboard.">
+    <meta name="twitter:image" content="<?= htmlspecialchars($siteLogo) ?>">
+    <meta name="geo.region" content="KE">
+    <meta name="geo.placename" content="Nairobi">
 
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -3209,6 +3218,22 @@ a.mb-ccard:hover { transform: translateY(-4px); border-color: rgba(2,132,199,.4)
         });
     })();
 
+    </script>
+
+    <script>
+    // Fire-and-forget visit beacon -- after window.onload, not inline at
+    // parse time, so this never competes with anything the page itself
+    // needs to render or become interactive. See api/track_visit.php.
+    window.addEventListener('load', function () {
+        try {
+            fetch('/api/track_visit.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: window.location.pathname }),
+                keepalive: true,
+            }).catch(function () {});
+        } catch (e) {}
+    });
     </script>
 
 </body>

@@ -3,3 +3,4 @@
 *.log
 .env
 node_modules/
+includes/db_secrets.php

@@ -56,7 +56,7 @@ $navSoon = ['market'];   // shown with a "Soon" tag and not clickable yet
             <!-- Action buttons -->
             <div class="kc-nav-actions d-flex align-items-center gap-2 mt-3 mt-lg-0">
                 <a href="<?= htmlspecialchars($appLoginUrl) ?>" class="kc-btn-outline js-client-login">
-                    <i class="bi bi-person"></i> Client Login
+                    <i class="bi bi-person"></i> ISP Login
                 </a>
                 <a href="<?= htmlspecialchars($appSignupUrl) ?>" class="kc-btn-outline">
                     <i class="bi bi-person-plus"></i> Register

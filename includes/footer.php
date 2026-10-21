@@ -350,7 +350,7 @@
             <li><a href="<?= mb_section_url('contact') ?>">Contact</a></li>
             <li><a href="<?= mb_section_url('demo') ?>">Book a Demo</a></li>
             <li><a href="<?= htmlspecialchars($appSignupUrl) ?>">Register</a></li>
-            <li><a href="<?= htmlspecialchars($appLoginUrl) ?>" class="js-client-login">Client Login</a></li>
+            <li><a href="<?= htmlspecialchars($appLoginUrl) ?>" class="js-client-login">ISP Login</a></li>
         </ul>
     </div>
 
@@ -469,7 +469,7 @@
 <div class="mecrofex-modal" id="client-login-modal">
     <div class="mecrofex-modal-content">
         <span class="mecrofex-close" id="client-login-close">&times;</span>
-        <h4 class="text-white mb-2">Client Login</h4>
+        <h4 class="text-white mb-2">ISP Login</h4>
         <p style="color:rgba(255,255,255,.6);margin-bottom:20px;">Enter your ISP's name to go to its login page.</p>
         <form id="client-login-form">
             <input type="text" id="client-login-ispname" placeholder="e.g. Medolistnet" autocomplete="off"

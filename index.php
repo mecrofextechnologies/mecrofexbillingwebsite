@@ -2596,7 +2596,7 @@ a.mb-ccard:hover { transform: translateY(-4px); border-color: rgba(2,132,199,.4)
                                 <li><i class="fas fa-check"></i> Once they pass KES 500, you just pay the usage.</li>
                                 <li><i class="fas fa-check"></i> No setup fee, no contract.</li>
                             </ul>
-                            <div class="mb-flip-eg"><small>Example</small>10 PPPoE users = KES 250, so you pay the <b>KES 500</b> minimum.</div>
+                            <div class="mb-flip-eg"><small>Example</small>10 PPPoE users = KES 200, so you pay the <b>KES 500</b> minimum.</div>
                         </div>
                     </div>
                 </div>
@@ -2628,7 +2628,7 @@ a.mb-ccard:hover { transform: translateY(-4px); border-color: rgba(2,132,199,.4)
                         <div class="mb-flip-face mb-flip-front">
                             <div class="mb-flip-ico"><i class="fas fa-network-wired"></i></div>
                             <div class="mb-flip-label">PPPoE customers</div>
-                            <div class="mb-flip-big"><small>KES</small>25</div>
+                            <div class="mb-flip-big"><small>KES</small>20</div>
                             <div class="mb-flip-unit">per active user / month</div>
                             <p class="mb-flip-cap">You only pay for PPPoE customers who are active that month.</p>
                             <span class="mb-flip-hint"><i class="fas fa-rotate"></i> Flip for details</span>
@@ -2640,7 +2640,7 @@ a.mb-ccard:hover { transform: translateY(-4px); border-color: rgba(2,132,199,.4)
                                 <li><i class="fas fa-check"></i> Inactive accounts cost you nothing.</li>
                                 <li><i class="fas fa-check"></i> Your bill scales up and down with your network.</li>
                             </ul>
-                            <div class="mb-flip-eg"><small>Example</small>120 active users × KES 25 = <b>KES 3,000</b> / month.</div>
+                            <div class="mb-flip-eg"><small>Example</small>120 active users × KES 20 = <b>KES 2,400</b> / month.</div>
                         </div>
                     </div>
                 </div>
@@ -2672,7 +2672,7 @@ a.mb-ccard:hover { transform: translateY(-4px); border-color: rgba(2,132,199,.4)
             <div class="mb-price-foot" data-reveal="zoom">
                 <div class="mb-formula">
                     <small>Your monthly bill</small>
-                    <b>KES 25</b> × active PPPoE users <span class="mb-op">+</span> <b>3%</b> of hotspot revenue
+                    <b>KES 20</b> × active PPPoE users <span class="mb-op">+</span> <b>3%</b> of hotspot revenue
                     <span class="mb-op">·</span> minimum <b>KES 500</b> <span class="mb-op">·</span> unlimited MikroTik routers
                 </div>
                 <div class="mb-price-cta">
